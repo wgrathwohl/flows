@@ -86,21 +86,24 @@ def NN(x, name, dim=32, init=False):
 
 
 def coupling_layer(x, b, name, init=False, backward=False):
-    def compute(x, b, logs, t):
-        logdet = tf.reduce_sum(logs * (1. - b), axis=[1, 2, 3])
+    def compute(x, b):
         if backward:
-            x = b * x + (1. - b) * ((x - t) * tf.exp(-logs))
+            s = tf.sigmoid(NN(b * x, "logs", init=init) + 2.)
+            t = NN(b * x, "t", init=init)
+            x = b * x + (1. - b) * ((x - t) / s)
             x, logdet_an = actnorm(x, name + "_an_in", init, logdet=True, backward=True)
+            logdet = tf.reduce_sum(tf.log(s + 1e-6) * (1. - b), axis=[1, 2, 3])
             return x, -logdet + logdet_an
         else:
             x, logdet_an = actnorm(x, name + "_an_in", init, logdet=True, backward=False)
-            x = b * x + (1. - b) * (x * tf.exp(logs) + t)
+            s = tf.sigmoid(NN(b * x, "logs", init=init) + 2.)
+            t = NN(b * x, "t", init=init)
+            x = b * x + (1. - b) * (x * s + t)
+            logdet = tf.reduce_sum(tf.log(s + 1e-6) * (1. - b), axis=[1, 2, 3])
             return x, logdet + logdet_an
 
     with tf.variable_scope(name, reuse=(not init)):
-        logs = NN(b * x, "logs", init=init)
-        t = NN(b * x, "t", init=init)
-        y, logdet = compute(x, b, logs, t)
+        y, logdet = compute(x, b)
     return y, logdet
 
 
@@ -229,12 +232,12 @@ if __name__ == "__main__":
     # xs_recons, logdet_recons = actnorm(z, "an", False, logdet=True, backward=True)
 
 
-    m = mask(xs, "channel", 0)
-    z_init, _ = coupling_layer(xs, m, "test_cl", init=True)
-    z, logdet_orig = coupling_layer(xs, m, "test_cl")
-    xs_recons, logdet_recons = coupling_layer(z, m, "test_cl", backward=True)
-    z_samp = tf.random_normal(tf.shape(z), stddev=.1)
-    xs_samp, logdet_samp = coupling_layer(z_samp, m, "test_cl", backward=True)
+    # m = mask(xs, "channel", 0)
+    # z_init, _ = coupling_layer(xs, m, "test_cl", init=True)
+    # z, logdet_orig = coupling_layer(xs, m, "test_cl")
+    # xs_recons, logdet_recons = coupling_layer(z, m, "test_cl", backward=True)
+    # z_samp = tf.random_normal(tf.shape(z), stddev=.1)
+    # xs_samp, logdet_samp = coupling_layer(z_samp, m, "test_cl", backward=True)
     # t = "channel"
     # z_init, logdet_orig = coupling_block(xs, "b1", t=t, init=True)
     # z, _ = coupling_block(xs, "b1", t=t)
@@ -246,7 +249,7 @@ if __name__ == "__main__":
     # z_samp = tf.random_normal(tf.shape(z), stddev=.1)
     # xs_samp, logdet_samp = scale_block(z_samp, "s1", backward=True)
     #
-    z = [z]
+    # z = [z]
     # z_init, logdet = coupling_block(xs, "b1", t="channel", init=True)
     # z, _ = coupling_block(xs, "b1", t="channel")
     # z = tf.reshape(z, [-1, 16 * 16 * 12])
@@ -255,11 +258,11 @@ if __name__ == "__main__":
     # z, logdet = scale_block(xs, "s1")
     # z = flatten(z)
 
-    # z_init, _ = net(xs, "net", 2, init=True)
-    # z, logdet_orig = net(xs, "net", 2)
-    # z_samp = [tf.random_normal(tf.shape(_z), stddev=.1) for _z in z]
-    # xs_recons, logdet_recons = net_backwards(z, "net", init=False)
-    # xs_samp, logdet_samp = net_backwards(z_samp, "net", init=False)
+    z_init, _ = net(xs, "net", 2, init=True)
+    z, logdet_orig = net(xs, "net", 2)
+    z_samp = [tf.random_normal(tf.shape(_z), stddev=.1) for _z in z]
+    xs_recons, logdet_recons = net_backwards(z, "net", init=False)
+    xs_samp, logdet_samp = net_backwards(z_samp, "net", init=False)
 
 
     for i, _z in enumerate(z):
@@ -312,7 +315,7 @@ if __name__ == "__main__":
         batch = data_pad[batch_inds]
         iter_lr = .0003 # if i > 1000 else (i / 1000.) * .0003
 
-        if True: #i % 100 == 0:
+        if i % 100 == 0:
             re, xre, lgdt, lgdt_re = sess.run([recons_error, x_recons, logdet_orig, logdet_recons], feed_dict={x: batch, lr: iter_lr})
             _l, logp, _, sstr = sess.run([loss, logpz, opt, sum_op],
                                                         feed_dict={x: batch, lr: iter_lr})

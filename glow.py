@@ -250,7 +250,6 @@ if __name__ == "__main__":
     tf.summary.histogram("x", x)
     x_samp = squeeze(xs_samp, backward=True)
     tf.summary.image("x_sample", clip(x_samp))
-    tf.summary.histogram("x_sample", x_samp)
     recons_error = tf.reduce_mean(tf.square(x - x_recons))
 
     logpz = tf.add_n([tf.reduce_sum(normal_logpdf(_z, 0., 0.), axis=[1, 2, 3]) for _z in z])

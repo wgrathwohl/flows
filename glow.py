@@ -77,7 +77,7 @@ def NN(x, name, dim=32, init=False):
                                  name=name, use_bias=True,
                                  kernel_initializer=tf.zeros_initializer())
             return h
-    with tf.variable_scope(name, reuse=(not init)) as scope:
+    with tf.variable_scope(name, reuse=(not init)):
         nc = gs(x)[-1]
         h = conv(x, dim, 3, "h1", init)
         h = conv(h, dim, 1, "h2", init)
@@ -85,26 +85,31 @@ def NN(x, name, dim=32, init=False):
     return h
 
 
-def coupling_layer(x, b, name, init=False, backward=False):
-    def compute(x, b):
-        if backward:
-            s = tf.sigmoid(NN(b * x, "logs", init=init) + 2.)
-            t = NN(b * x, "t", init=init)
-            x = b * x + (1. - b) * ((x - t) / s)
-            x, logdet_an = actnorm(x, name + "_an_in", init, logdet=True, backward=True)
-            logdet = tf.reduce_sum(tf.log(s + 1e-6) * (1. - b), axis=[1, 2, 3])
-            return x, -logdet + logdet_an
-        else:
-            x, logdet_an = actnorm(x, name + "_an_in", init, logdet=True, backward=False)
-            s = tf.sigmoid(NN(b * x, "logs", init=init) + 2.)
-            t = NN(b * x, "t", init=init)
-            x = b * x + (1. - b) * (x * s + t)
-            logdet = tf.reduce_sum(tf.log(s + 1e-6) * (1. - b), axis=[1, 2, 3])
-            return x, logdet + logdet_an
+def split_inputs(inputs):
+    nc = gs(x)[-1] // 2
+    return inputs[:, :, :, :nc], inputs[:, :, :, nc:]
 
+
+def coupling_layer(inputs, name, init=False, backward=False, eps=1e-6):
+    get_s = lambda feats: tf.sigmoid(NN(feats, "logit_s", init=init) + 2.) + eps
+    get_t = lambda feats: NN(feats, "t", init=init)
+    get_logdet = lambda s: tf.reduce_sum(tf.log(s), axis=[1, 2, 3]) * (-1. if backward else 1.)
     with tf.variable_scope(name, reuse=(not init)):
-        y, logdet = compute(x, b)
-    return y, logdet
+        if backward:
+            y1, y2 = split_inputs(inputs)
+            s = get_s(y1)
+            t = get_t(y1)
+            x1 = y1
+            x2 = (y2 - t) / s
+            return tf.concat([x1, x2], axis=3), get_logdet(s)
+        else:
+            x1, x2 = split_inputs(inputs)
+            s = get_s(x1)
+            t = get_t(x1)
+            y1 = x1
+            y2 = x2 * s + t
+            return tf.concat([y1, y2], axis=3), get_logdet(s)
+
 
 
 def coupling_block(x, name, t="channel", init=False, backward=False):
@@ -129,10 +134,11 @@ def scale_block(x, name, init=False, backward=False):
 
 def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
     def compute(x, logs, t):
+        s = tf.exp(logs) + eps
         if backward:
-            return (x - t) * tf.exp(-logs)
+            return (x - t) / s
         else:
-            return x * tf.exp(logs) + t
+            return x * s + t
     def ld(x, logs):
         h, w = x.get_shape().as_list()[1:3]
         val = tf.reduce_sum(logs) * h * w
@@ -179,6 +185,7 @@ def net(x, name, depth, init=False):
                 zs.append(z)
     return zs, logdet
 
+
 def net_backwards(zs, name, init=False):
     logdet = 0.
     with tf.variable_scope(name, reuse=(not init)):
@@ -209,13 +216,13 @@ if __name__ == "__main__":
     data = mnist.train.images.reshape([-1, 28, 28, 1])
     data_pad = np.zeros((data.shape[0], 32, 32, 1))
     data_pad[:, 2:-2, 2:-2, :] = data
-    #
-    # data_test = mnist.test.images.reshape([-1, 28, 28, 1])
-    # data_test_pad = np.zeros((data_test.shape[0], 32, 32, 1))
-    # data_test_pad[:, 2:-2, 2:-2, :] = data_test
+
+    data_test = mnist.test.images.reshape([-1, 28, 28, 1])
+    data_test_pad = np.zeros((data_test.shape[0], 32, 32, 1))
+    data_test_pad[:, 2:-2, 2:-2, :] = data_test
 
     inds = list(range(data.shape[0]))
-    # test_inds = list(range(data_test.shape[0]))
+    test_inds = list(range(data_test.shape[0]))
 
     np.random.shuffle(inds)
     init_inds = inds[:16]
@@ -227,42 +234,11 @@ if __name__ == "__main__":
     x = tf.placeholder(tf.float32, [None, 32, 32, 1], name="x")
     xs = squeeze(x)
 
-    # z_init, _ = actnorm(xs, "an", True, logdet=True)
-    # z, logdet = actnorm(xs, "an", False, logdet=True)
-    # xs_recons, logdet_recons = actnorm(z, "an", False, logdet=True, backward=True)
-
-
-    # m = mask(xs, "channel", 0)
-    # z_init, _ = coupling_layer(xs, m, "test_cl", init=True)
-    # z, logdet_orig = coupling_layer(xs, m, "test_cl")
-    # xs_recons, logdet_recons = coupling_layer(z, m, "test_cl", backward=True)
-    # z_samp = tf.random_normal(tf.shape(z), stddev=.1)
-    # xs_samp, logdet_samp = coupling_layer(z_samp, m, "test_cl", backward=True)
-    # t = "channel"
-    # z_init, logdet_orig = coupling_block(xs, "b1", t=t, init=True)
-    # z, _ = coupling_block(xs, "b1", t=t)
-    # xs_recons, logdet_recons = coupling_block(z, "b1", t=t, backward=True)
-
-    # z_init, _ = scale_block(xs, "s1", True)
-    # z, logdet_orig = scale_block(xs, "s1")
-    # xs_recons, logdet_recons = scale_block(z, "s1", backward=True)
-    # z_samp = tf.random_normal(tf.shape(z), stddev=.1)
-    # xs_samp, logdet_samp = scale_block(z_samp, "s1", backward=True)
-    #
-    # z = [z]
-    # z_init, logdet = coupling_block(xs, "b1", t="channel", init=True)
-    # z, _ = coupling_block(xs, "b1", t="channel")
-    # z = tf.reshape(z, [-1, 16 * 16 * 12])
-    #
-    # z_init, _ = scale_block(xs, "s1", True)
-    # z, logdet = scale_block(xs, "s1")
-    # z = flatten(z)
-
-    z_init, _ = net(xs, "net", 2, init=True)
-    z, logdet_orig = net(xs, "net", 2)
+    z_init, _ = net(xs, "net", 3, init=True)
+    z, logdet_orig = net(xs, "net", 3)
     z_samp = [tf.random_normal(tf.shape(_z), stddev=.1) for _z in z]
-    xs_recons, logdet_recons = net_backwards(z, "net", init=False)
-    xs_samp, logdet_samp = net_backwards(z_samp, "net", init=False)
+    xs_recons, logdet_recons = net_backwards(z, "net")
+    xs_samp, logdet_samp = net_backwards(z_samp, "net")
 
 
     for i, _z in enumerate(z):
@@ -280,8 +256,8 @@ if __name__ == "__main__":
     logpz = tf.add_n([tf.reduce_sum(normal_logpdf(_z, 0., 0.), axis=[1, 2, 3]) for _z in z])
     logpz = tf.reduce_mean(logpz)
     logdet = tf.reduce_mean(logdet_orig)
-    total_logprob = logpz + logdet
-    loss = -total_logprob / np.prod(gs(xs)[1:])
+    total_logprob = ((logpz + logdet) / np.prod(gs(xs)[1:])) - np.log(256.)
+    loss = -total_logprob
     lr = tf.placeholder(tf.float32, [], name="lr")
     optim = tf.train.AdamOptimizer(lr)
     opt = optim.minimize(loss)
@@ -291,9 +267,7 @@ if __name__ == "__main__":
     tf.summary.scalar("logp", logpz)
     tf.summary.scalar("recons", recons_error)
 
-    # for v in tf.get_collection("logdets"):
-    #     print(v.name)
-    #     tf.summary.scalar(v.name, tf.reduce_mean(v))
+
     for v in tf.trainable_variables():
         tf.summary.histogram(v.name, v)
     sum_op = tf.summary.merge_all()
@@ -301,40 +275,24 @@ if __name__ == "__main__":
 
     sess.run(tf.global_variables_initializer())
     sess.run(z_init, feed_dict={x: init_batch})
-    #_an, _ld = sess.run([z, logdet], feed_dict={x: init_batch})
-    # print(_an.min(), _an.max())
-    # print(_an.mean(), _an.var())
-    # print(_ld)
+    train_writer = tf.summary.FileWriter("/root/results/train/summary/train")
+    test_writer = tf.summary.FileWriter("/root/results/train/summary/test")
 
-    writer = tf.summary.FileWriter("/tmp/train")
-
-    #THE PROBLEM IS NOT IN ACTNORM (I THINK) TRY SOME THINGS FOR STABILITY IN COUPLING LAYER
 
     for i in range(100000):
-        batch_inds = np.random.choice(inds, 64, replace=False)
+        batch_inds = np.random.choice(inds, 128, replace=False)
         batch = data_pad[batch_inds]
-        iter_lr = .0003 # if i > 1000 else (i / 1000.) * .0003
-
+        iter_lr = .001
         if i % 100 == 0:
-            re, xre, lgdt, lgdt_re = sess.run([recons_error, x_recons, logdet_orig, logdet_recons], feed_dict={x: batch, lr: iter_lr})
-            _l, logp, _, sstr = sess.run([loss, logpz, opt, sum_op],
-                                                        feed_dict={x: batch, lr: iter_lr})
-            # cv2.imshow("orig", batch[0])
-            # cv2.waitKey(0)
-            # cv2.imshow("recons", xre[0])
-            # cv2.waitKey(0)
-            writer.add_summary(sstr, i)
+            re, _l, logp, _, sstr = sess.run([recons_error, loss, logpz, opt, sum_op],
+                                             feed_dict={x: batch, lr: iter_lr})
+            train_writer.add_summary(sstr, i)
 
-            # if i % 10 == 0:
-            #     batch_inds = np.random.choice(test_inds, 64, replace=False)
-            #     test_batch = data_test_pad[batch_inds]
-            #     logpt = sess.run(logpz, feed_dict={x: test_batch})
-            #     print(i, logp, logpt)
-            # else:
-            #print(lgdt)
-            #print(lgdt_re)
+            test_batch_inds = np.random.choice(test_inds, 128, replace=False)
+            test_batch = data_test_pad[test_batch_inds]
+            sstr = sess.run(sum_op, feed_dict={x: test_batch})
+            test_writer.add_summary(sstr, i)
             print(i, _l, logp, re)
+            1/0
         else:
             _ = sess.run(sum_op, feed_dict={x: batch, lr: iter_lr})
-            print(i)
-        #print(_z[0])

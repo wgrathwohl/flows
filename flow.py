@@ -2,14 +2,11 @@ import tensorflow as tf
 import numpy as np
 import cv2
 from tensorflow.examples.tutorials.mnist import input_data
+import matplotlib.pyplot as plt
 
 
 def gs(x):
     return x.get_shape().as_list()
-
-
-def clip(x):
-    return tf.clip_by_value(x, 0., 1.)
 
 
 def name_var(x, name):
@@ -56,10 +53,11 @@ def mask(x, variety="channel", ind=0):
         else:
             m[:, :, :, hnc:] = 1.
     else:
-        if ind == 0:
-            m[:, :, :, ::2] = 1.
-        else:
-            m[:, :, :, 1::2] = 1.
+        for i in range(nc):
+            if i % 4 == 1 or i % 4 == 2:
+                m[:, :, :, i] = 1.
+        if ind == 1:
+            m = 1. - m
     return m
 
 
@@ -75,8 +73,11 @@ def NN(x, name, dim=32, init=False):
         else:
             h = tf.layers.conv2d(h, d, (k, k), (1, 1), "same",
                                  name=name, use_bias=True,
-                                 kernel_initializer=tf.zeros_initializer())
-            return h
+                                 kernel_initializer=tf.zeros_initializer(),
+                                 bias_initializer=tf.zeros_initializer())
+            logs = tf.get_variable("logs", shape=[1, 1, 1, d], dtype=tf.float32, initializer=tf.zeros_initializer())
+            s = tf.exp(logs)
+            return h * s
     with tf.variable_scope(name, reuse=(not init)):
         nc = gs(x)[-1]
         h = conv(x, dim, 3, "h1", init)
@@ -85,22 +86,49 @@ def NN(x, name, dim=32, init=False):
     return h
 
 
-def coupling_layer(x, b, name, init=False, backward=False):
+def coupling_layer(x, b, name, init=False, backward=False, eps=1e-6):
+    def get_vars(b, x):
+        bx = b * x
+        logit_s = NN(bx, "logit_s", init=init) + 2.
+        s = tf.sigmoid(logit_s) + eps
+        t = NN(bx, "t", init=init)
+        return logit_s, s, t
+
     with tf.variable_scope(name, reuse=(not init)):
         if backward:
-            s = tf.sigmoid(NN(b * x, "logs", init=init) + 2.) + 1e-6
-            t = NN(b * x, "t", init=init)
-            x = b * x + (1. - b) * ((x - t) / s)
+            logit_s, s, t = get_vars(b, x)
+            x = b * x + (1. - b) * ((x / s) - t)
             x, logdet_an = actnorm(x, name + "_an_in", init, logdet=True, backward=True)
-            logdet = tf.reduce_sum(tf.log(s) * (1. - b), axis=[1, 2, 3])
+            logdet = tf.reduce_sum(tf.log_sigmoid(logit_s) * (1. - b), axis=[1, 2, 3])
             return x, -logdet + logdet_an
         else:
             x, logdet_an = actnorm(x, name + "_an_in", init, logdet=True, backward=False)
-            s = tf.sigmoid(NN(b * x, "logs", init=init) + 2.) + 1e-6
-            t = NN(b * x, "t", init=init)
-            x = b * x + (1. - b) * (x * s + t)
-            logdet = tf.reduce_sum(tf.log(s) * (1. - b), axis=[1, 2, 3])
+            logit_s, s, t = get_vars(b, x)
+            if not init:
+                tf.summary.histogram("s/"+name, s)
+                tf.summary.histogram("t/"+name, t)
+            x = b * x + (1. - b) * ((x + t) * s)
+            logdet = tf.reduce_sum(tf.log_sigmoid(logit_s) * (1. - b), axis=[1, 2, 3])
             return x, logdet + logdet_an
+
+
+# def split(x, t, ind):
+#     assert t in ("channel", "checker")
+#     assert ind in (0, 1)
+#     if t == "channel":
+#         nc = gs(x)[-1] // 2
+#         x1, x2 = x[:, :, :, :nc], x[:, :, :, nc:]
+#     else:
+#         x1, x2 = x[:, :, :, ::2], x[:, :, :, 1::2]
+#     if ind == 0:
+#         return x1, x2
+#     else:
+#         return x2, x1
+#
+#
+# def coupling_layer(x, t, ind, name, init=False, backward=False):
+#     with tf.variable_scope(name):
+#         pass
 
 
 def coupling_block(x, name, t="channel", init=False, backward=False):
@@ -125,11 +153,10 @@ def scale_block(x, name, init=False, backward=False):
 
 def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
     def compute(x, logs, t):
-        s = tf.exp(logs) + eps
         if backward:
-            return (x - t) / s
+            return (x * tf.exp(-logs)) - t
         else:
-            return x * s + t
+            return (x + t) * tf.exp(logs)
     def ld(x, logs):
         h, w = x.get_shape().as_list()[1:3]
         val = tf.reduce_sum(logs) * h * w
@@ -144,7 +171,7 @@ def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
         if init:
             x_mean, x_var = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=True)
             logs_init = tf.log(1. / (tf.sqrt(x_var) + eps))
-            t_init = -tf.exp(logs_init) * x_mean
+            t_init = -x_mean
             logsop = logs.assign(logs_init)
             top = t.assign(t_init)
             with tf.control_dependencies([logsop, top]):
@@ -156,6 +183,72 @@ def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
             return an, ld(x, logs)
         else:
             return an
+#
+# def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
+#     def compute(x, logs, t):
+#         if backward:
+#             return (x - t) * tf.exp(-logs)
+#         else:
+#             return x * tf.exp(logs) + t
+#     def ld(x, logs):
+#         h, w = x.get_shape().as_list()[1:3]
+#         val = tf.reduce_sum(logs) * h * w
+#         if backward:
+#             return -val
+#         else:
+#             return val
+#
+#     with tf.variable_scope(name, reuse=(not init)):
+#         t = tf.get_variable("t", (1, 1, 1, gs(x)[-1]), trainable=True)
+#         logs = tf.get_variable("logs", (1, 1, 1, gs(x)[-1]), trainable=True)
+#         if init:
+#             x_mean, x_var = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=True)
+#             logs_init = tf.log(1. / (tf.sqrt(x_var) + eps))
+#             t_init = -tf.exp(logs_init) * x_mean
+#             logsop = logs.assign(logs_init)
+#             top = t.assign(t_init)
+#             with tf.control_dependencies([logsop, top]):
+#                 an = compute(x, logs_init, t_init)
+#         else:
+#             an = compute(x, logs, t)
+#
+#         if logdet:
+#             return an, ld(x, logs)
+#         else:
+#             return an
+
+# def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
+#     def compute(x, s, t):
+#         if backward:
+#             return (x - t) / s
+#         else:
+#             return x * s + t
+#     def ld(x, s):
+#         h, w = x.get_shape().as_list()[1:3]
+#         val = tf.reduce_sum(tf.log(tf.abs(s) + eps)) * h * w
+#         if backward:
+#             return -val
+#         else:
+#             return val
+#
+#     with tf.variable_scope(name, reuse=(not init)):
+#         t = tf.get_variable("t", (1, 1, 1, gs(x)[-1]), trainable=True)
+#         s = tf.get_variable("s", (1, 1, 1, gs(x)[-1]), trainable=True)
+#         if init:
+#             x_mean, x_var = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=True)
+#             s_init = 1. / (tf.sqrt(x_var) + eps)
+#             t_init = -s_init * x_mean
+#             sop = s.assign(s_init)
+#             top = t.assign(t_init)
+#             with tf.control_dependencies([sop, top]):
+#                 an = compute(x, s_init, t_init)
+#         else:
+#             an = compute(x, s, t)
+#
+#         if logdet:
+#             return an, ld(x, s)
+#         else:
+#             return an
 
 
 def net(x, name, depth, init=False):
@@ -192,38 +285,60 @@ def net_backwards(zs, name, init=False):
                 top_z = tf.concat([h, next_z], axis=3)
 
 
-
 def normal_logpdf(x, mu, logvar):
     logp = -.5 * (np.log(2. * np.pi) + logvar + ((x - mu) ** 2) / tf.exp(logvar))
     return logp
 
 
+def pad_batch(batch):
+    bs = batch.shape[0]
+    pads = np.random.randint(4, size=(bs, 2))
+    padded = []
+    for (px, py), im in zip(pads, batch):
+        im_pad = np.zeros((32, 32, 1), dtype=np.uint8)
+        im_pad[px: px + 28, py: py + 28, :] = im
+        padded.append(im_pad)
+    return np.array(padded)
+
+
+def preprocess(x, n_bits_x=5):
+    x = tf.cast(x, 'float32')
+    if n_bits_x < 8:
+        x = tf.floor(x / 2 ** (8 - n_bits_x))
+    n_bins = 2. ** n_bits_x
+    # add [0, 1] random noise
+    x = x + tf.random_uniform(tf.shape(x), 0., 1.)
+    x = x / n_bins - .5
+    return x
+
+
+def postprocess(x, n_bits_x=5):
+    n_bins = 2. ** n_bits_x
+    x = tf.floor((x + .5) * n_bins) * (2 ** (8 - n_bits_x))
+    return tf.cast(tf.clip_by_value(x, 0, 255), 'uint8')
+
+
 if __name__ == "__main__":
     mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
-    #import pickle
-    #with open("mnist.pkl", 'rb') as f:
-    #    mnist = pickle.load(f, encoding='latin1')[0][0]
-
-    data = mnist.train.images.reshape([-1, 28, 28, 1])
-    data_pad = np.zeros((data.shape[0], 32, 32, 1))
-    data_pad[:, 2:-2, 2:-2, :] = data
-
-    data_test = mnist.test.images.reshape([-1, 28, 28, 1])
-    data_test_pad = np.zeros((data_test.shape[0], 32, 32, 1))
-    data_test_pad[:, 2:-2, 2:-2, :] = data_test
+    # load data and convert to char
+    #cvt = lambda x: np.tile(((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1]), (1, 1, 1, 3))
+    cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])
+    data = cvt(mnist.train.images)
+    data_test = cvt(mnist.test.images)
 
     inds = list(range(data.shape[0]))
     test_inds = list(range(data_test.shape[0]))
 
     np.random.shuffle(inds)
-    init_inds = inds[:16]
-    init_batch = data_pad[init_inds]
+    init_inds = inds[:1024]
+    init_batch = data[init_inds]
+    init_batch = pad_batch(init_batch)
     
     sess = tf.Session()
 
-
-    x = tf.placeholder(tf.float32, [None, 32, 32, 1], name="x")
-    xs = squeeze(x)
+    x = tf.placeholder(tf.uint8, [None, 32, 32, 1], name="x")
+    xpp = preprocess(x)
+    xs = squeeze(xpp)
 
     z_init, _ = net(xs, "net", 3, init=True)
     z, logdet_orig = net(xs, "net", 3)
@@ -231,20 +346,20 @@ if __name__ == "__main__":
     xs_recons, logdet_recons = net_backwards(z, "net")
     xs_samp, logdet_samp = net_backwards(z_samp, "net")
 
-
     for i, _z in enumerate(z):
         tf.summary.histogram("z{}".format(i), _z)
-    x_recons = squeeze(xs_recons, backward=True)
-    tf.summary.image("x_recons", clip(x_recons))
-    tf.summary.image("x", clip(x))
-    x_samp = squeeze(xs_samp, backward=True)
-    tf.summary.image("x_sample", clip(x_samp))
-    recons_error = tf.reduce_mean(tf.square(x - x_recons))
+
+    x_recons = postprocess(squeeze(xs_recons, backward=True))
+    tf.summary.image("x_recons", x_recons)
+    tf.summary.image("x", x)
+    x_samp = postprocess(squeeze(xs_samp, backward=True))
+    tf.summary.image("x_sample", x_samp)
+    recons_error = tf.reduce_mean(tf.square(tf.to_float(postprocess(xpp) - x_recons)))
 
     logpz = tf.add_n([tf.reduce_sum(normal_logpdf(_z, 0., 0.), axis=[1, 2, 3]) for _z in z])
     logpz = tf.reduce_mean(logpz)
     logdet = tf.reduce_mean(logdet_orig)
-    total_logprob = ((logpz + logdet) / np.prod(gs(xs)[1:])) - np.log(256.)
+    total_logprob = (logpz + logdet) - np.log(32.) * np.prod(gs(xs)[1:])
     loss = -total_logprob
     lr = tf.placeholder(tf.float32, [], name="lr")
     optim = tf.train.AdamOptimizer(lr)
@@ -254,32 +369,51 @@ if __name__ == "__main__":
     tf.summary.scalar("logdet", logdet)
     tf.summary.scalar("logp", logpz)
     tf.summary.scalar("recons", recons_error)
+    tf.summary.scalar("lr", lr)
 
 
-    for v in tf.trainable_variables():
-        tf.summary.histogram(v.name, v)
+    # for v in tf.trainable_variables():
+    #     tf.summary.histogram(v.name, v)
     sum_op = tf.summary.merge_all()
 
 
     sess.run(tf.global_variables_initializer())
     sess.run(z_init, feed_dict={x: init_batch})
-    train_writer = tf.summary.FileWriter("/root/results/train/summary/train")
-    test_writer = tf.summary.FileWriter("/root/results/train/summary/test")
+    train_writer = tf.summary.FileWriter("/tmp/train/train")
+    test_writer = tf.summary.FileWriter("/tmp/train/test")
+    #train_writer = tf.summary.FileWriter("/root/results/train/summary/train")
+    #test_writer = tf.summary.FileWriter("/root/results/train/summary/test")
 
 
-    for i in range(100000):
-        batch_inds = np.random.choice(inds, 128, replace=False)
-        batch = data_pad[batch_inds]
-        iter_lr = .001
-        if i % 100 == 0:
-            re, _l, logp, _, sstr = sess.run([recons_error, loss, logpz, opt, sum_op],
-                                             feed_dict={x: batch, lr: iter_lr})
-            train_writer.add_summary(sstr, i)
+    n_epochs = 10000
+    batch_size = 128
+    n_data = data.shape[0]
+    n_iters = n_data // batch_size
+    warm_up_epochs = 10
+    warm_up_iters = n_iters * warm_up_epochs
+    base_lr = .001
 
-            test_batch_inds = np.random.choice(test_inds, 128, replace=False)
-            test_batch = data_test_pad[test_batch_inds]
-            sstr = sess.run(sum_op, feed_dict={x: test_batch})
-            test_writer.add_summary(sstr, i)
-            print(i, _l, logp, re)
-        else:
-            _ = sess.run(sum_op, feed_dict={x: batch, lr: iter_lr})
+
+    iter = 0
+    for epoch in range(n_epochs):
+        np.random.shuffle(inds)
+        for i in range(n_iters):
+            batch_inds = inds[i * batch_size: (i + 1) * batch_size]
+            batch = data[batch_inds]
+            batch = pad_batch(batch)
+            iter_lr = base_lr * (float(iter) / warm_up_iters) if iter < warm_up_iters else base_lr
+            if iter % 100 == 0:
+                re, _l, logp, _, sstr = sess.run([recons_error, loss, logpz, opt, sum_op],
+                                                 feed_dict={x: batch, lr: iter_lr})
+                train_writer.add_summary(sstr, iter)
+                test_batch_inds = np.random.choice(test_inds, 128, replace=False)
+                test_batch = data_test[test_batch_inds]
+                test_batch = pad_batch(test_batch)
+                sstr = sess.run(sum_op, feed_dict={x: test_batch, lr: iter_lr})
+                test_writer.add_summary(sstr, iter)
+                print(i, _l, logp, re)
+
+            else:
+                _ = sess.run(sum_op, feed_dict={x: batch, lr: iter_lr})
+
+            iter += 1

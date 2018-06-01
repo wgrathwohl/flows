@@ -249,6 +249,16 @@ def postprocess(x, n_bits_x=5):
     return tf.cast(tf.clip_by_value(x, 0, 255), 'uint8')
 
 
+def logpx(zs, logdet):
+    logpz = tf.add_n([tf.reduce_sum(normal_logpdf(z, 0., 0.), axis=[1, 2, 3]) for z in zs])
+    ave_logpz = tf.reduce_mean(logpz)
+    ave_logdet = tf.reduce_mean(logdet)
+    total_logprob = (ave_logpz + ave_logdet)
+    tf.summary.scalar("logdet", ave_logdet)
+    tf.summary.scalar("logp", ave_logpz)
+    return total_logprob
+
+
 if __name__ == "__main__":
     mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
     # load data and convert to char
@@ -289,11 +299,8 @@ if __name__ == "__main__":
     tf.summary.image("x", x)
 
     # compute loss
-    logpz = tf.add_n([tf.reduce_sum(normal_logpdf(_z, 0., 0.), axis=[1, 2, 3]) for _z in z])
-    logpz = tf.reduce_mean(logpz)
-    logdet = tf.reduce_mean(logdet_orig)
-    total_logprob = (logpz + logdet) - np.log(2.**n_bits_x) * np.prod(gs(xpp)[1:])
-    loss = -total_logprob
+    objective = logpx(z, logdet_orig) - np.log(2.**n_bits_x) * np.prod(gs(xpp)[1:])
+    loss = -objective
     bits_x = loss / (np.log(2.) * np.prod(gs(xpp)[1:]))
     lr = tf.placeholder(tf.float32, [], name="lr")
     optim = tf.train.AdamOptimizer(lr)
@@ -301,8 +308,6 @@ if __name__ == "__main__":
 
     # summary for loss, etc
     tf.summary.scalar("loss", loss)
-    tf.summary.scalar("logdet", logdet)
-    tf.summary.scalar("logp", logpz)
     tf.summary.scalar("recons", recons_error)
     tf.summary.scalar("lr", lr)
     tf.summary.scalar("bits_x", bits_x)
@@ -332,7 +337,7 @@ if __name__ == "__main__":
             batch = pad_batch(batch)
             iter_lr = base_lr * (float(iter) / warm_up_iters) if iter < warm_up_iters else base_lr
             if iter % 100 == 0:
-                re, _l, logp, _, sstr = sess.run([recons_error, loss, logpz, opt, sum_op],
+                re, _l, _, sstr = sess.run([recons_error, loss, opt, sum_op],
                                                  feed_dict={x: batch, lr: iter_lr})
                 train_writer.add_summary(sstr, iter)
                 test_batch_inds = np.random.choice(test_inds, 128, replace=False)
@@ -340,7 +345,7 @@ if __name__ == "__main__":
                 test_batch = pad_batch(test_batch)
                 sstr = sess.run(sum_op, feed_dict={x: test_batch, lr: iter_lr})
                 test_writer.add_summary(sstr, iter)
-                print(iter, _l, logp, re)
+                print(iter, _l, re)
 
             else:
                 _ = sess.run(sum_op, feed_dict={x: batch, lr: iter_lr})

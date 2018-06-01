@@ -1,8 +1,6 @@
 import tensorflow as tf
 import numpy as np
-import cv2
 from tensorflow.examples.tutorials.mnist import input_data
-import matplotlib.pyplot as plt
 
 
 def gs(x):
@@ -37,13 +35,13 @@ def squeeze(x, factor=2, backward=False):
     return x
 
 
-def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
+def actnorm(x, name, init=False, eps=1e-6, return_logdet=False, backward=False):
     def compute(x, logs, t):
         if backward:
             return (x * tf.exp(-logs)) - t
         else:
             return (x + t) * tf.exp(logs)
-    def ld(x, logs):
+    def logdet(x, logs):
         h, w = x.get_shape().as_list()[1:3]
         val = tf.reduce_sum(logs) * h * w
         if backward:
@@ -64,13 +62,13 @@ def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
         else:
             an = compute(x, logs, t)
 
-        if logdet:
-            return an, ld(x, logs)
+        if return_logdet:
+            return an, logdet(x, logs)
         else:
             return an
 
 
-def NN(x, name, dim=32, init=False):
+def NN(x, name, dim=128, init=False):
     def conv(h, d, k, name, init, nonlin=True):
         if nonlin:
             h = tf.layers.conv2d(h, d, (k, k), (1, 1), "same",
@@ -132,7 +130,7 @@ def coupling_layer(in_feats, name, init=False, backward=False, eps=1e-6):
 
 
 def random_rotation_matrix(nc):
-    return np.linalg.qr(np.random.randn(nc, nc))[0].astype('float32')
+    return np.linalg.qr(np.random.randn(nc, nc))[0].astype(np.float32)
 
 
 def invconv_layer(in_feats, name, init=False, backward=False, eps=1e-6):
@@ -254,13 +252,13 @@ def postprocess(x, n_bits_x=5):
 if __name__ == "__main__":
     mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
     # load data and convert to char
-    #cvt = lambda x: np.tile(((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1]), (1, 1, 1, 3))
     cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])
     data = cvt(mnist.train.images)
     data_test = cvt(mnist.test.images)
 
     inds = list(range(data.shape[0]))
     test_inds = list(range(data_test.shape[0]))
+    n_bits_x = 5
 
     np.random.shuffle(inds)
     init_inds = inds[:1024]
@@ -270,53 +268,51 @@ if __name__ == "__main__":
     sess = tf.Session()
 
     x = tf.placeholder(tf.uint8, [None, 32, 32, 1], name="x")
-    xpp = preprocess(x)
+    # clip to 5 bits
+    xpp = preprocess(x, n_bits_x=n_bits_x)
 
-    z_init, _ = net(xpp, "net", 3, 4, init=True)
-    z, logdet_orig = net(xpp, "net", 3, 4)
+    z_init, _ = net(xpp, "net", 3, 8, init=True)
+    z, logdet_orig = net(xpp, "net", 3, 8)
     z_samp = [tf.random_normal(tf.shape(_z)) for _z in z]
-    x_recons, logdet_recons = net(z, "net", 3, 4, backward=True)
-    x_samp, logdet_samp = net(z_samp, "net", 3, 4, backward=True)
-    print(gs(xpp), gs(x_recons), gs(x_samp), [gs(_z) for _z in z])
+    x_recons, logdet_recons = net(z, "net", 3, 8, backward=True)
+    x_samp, logdet_samp = net(z_samp, "net", 3, 8, backward=True)
 
     for i, _z in enumerate(z):
         tf.summary.histogram("z{}".format(i), _z)
 
-    x_recons = postprocess(x_recons)
+    # visualization for debugging
+    x_recons = postprocess(x_recons, n_bits_x=n_bits_x)
+    x_samp = postprocess(x_samp, n_bits_x=n_bits_x)
+    recons_error = tf.reduce_mean(tf.square(tf.to_float(postprocess(xpp, n_bits_x=n_bits_x) - x_recons)))
+    tf.summary.image("x_sample", x_samp)
     tf.summary.image("x_recons", x_recons)
     tf.summary.image("x", x)
-    x_samp = postprocess(x_samp)
-    tf.summary.image("x_sample", x_samp)
-    recons_error = tf.reduce_mean(tf.square(tf.to_float(postprocess(xpp) - x_recons)))
 
+    # compute loss
     logpz = tf.add_n([tf.reduce_sum(normal_logpdf(_z, 0., 0.), axis=[1, 2, 3]) for _z in z])
     logpz = tf.reduce_mean(logpz)
     logdet = tf.reduce_mean(logdet_orig)
-    total_logprob = (logpz + logdet) - np.log(32.) * np.prod(gs(xpp)[1:])
+    total_logprob = (logpz + logdet) - np.log(2.**n_bits_x) * np.prod(gs(xpp)[1:])
     loss = -total_logprob
+    bits_x = loss / (np.log(2.) * np.prod(gs(xpp)[1:]))
     lr = tf.placeholder(tf.float32, [], name="lr")
     optim = tf.train.AdamOptimizer(lr)
     opt = optim.minimize(loss)
 
+    # summary for loss, etc
     tf.summary.scalar("loss", loss)
     tf.summary.scalar("logdet", logdet)
     tf.summary.scalar("logp", logpz)
     tf.summary.scalar("recons", recons_error)
     tf.summary.scalar("lr", lr)
-
-
-    # for v in tf.trainable_variables():
-    #     tf.summary.histogram(v.name, v)
+    tf.summary.scalar("bits_x", bits_x)
     sum_op = tf.summary.merge_all()
 
-
     sess.run(tf.global_variables_initializer())
+    # initialize act-norm parameters
     sess.run(z_init, feed_dict={x: init_batch})
     train_writer = tf.summary.FileWriter("/tmp/train/train")
     test_writer = tf.summary.FileWriter("/tmp/train/test")
-    #train_writer = tf.summary.FileWriter("/root/results/train/summary/train")
-    #test_writer = tf.summary.FileWriter("/root/results/train/summary/test")
-
 
     n_epochs = 10000
     batch_size = 128
@@ -344,7 +340,7 @@ if __name__ == "__main__":
                 test_batch = pad_batch(test_batch)
                 sstr = sess.run(sum_op, feed_dict={x: test_batch, lr: iter_lr})
                 test_writer.add_summary(sstr, iter)
-                print(i, _l, logp, re)
+                print(iter, _l, logp, re)
 
             else:
                 _ = sess.run(sum_op, feed_dict={x: batch, lr: iter_lr})

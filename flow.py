@@ -1,16 +1,10 @@
 import tensorflow as tf
 import numpy as np
-import cv2
 from tensorflow.examples.tutorials.mnist import input_data
-import matplotlib.pyplot as plt
 
 
 def gs(x):
     return x.get_shape().as_list()
-
-
-def name_var(x, name):
-    return tf.identity(x, name=name)
 
 
 def default_initializer(std=0.05):
@@ -112,25 +106,6 @@ def coupling_layer(x, b, name, init=False, backward=False, eps=1e-6):
             return x, logdet + logdet_an
 
 
-# def split(x, t, ind):
-#     assert t in ("channel", "checker")
-#     assert ind in (0, 1)
-#     if t == "channel":
-#         nc = gs(x)[-1] // 2
-#         x1, x2 = x[:, :, :, :nc], x[:, :, :, nc:]
-#     else:
-#         x1, x2 = x[:, :, :, ::2], x[:, :, :, 1::2]
-#     if ind == 0:
-#         return x1, x2
-#     else:
-#         return x2, x1
-#
-#
-# def coupling_layer(x, t, ind, name, init=False, backward=False):
-#     with tf.variable_scope(name):
-#         pass
-
-
 def coupling_block(x, name, t="channel", init=False, backward=False):
     with tf.variable_scope(name, reuse=(not init)):
         m1 = mask(x, t, 0)
@@ -183,72 +158,6 @@ def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
             return an, ld(x, logs)
         else:
             return an
-#
-# def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
-#     def compute(x, logs, t):
-#         if backward:
-#             return (x - t) * tf.exp(-logs)
-#         else:
-#             return x * tf.exp(logs) + t
-#     def ld(x, logs):
-#         h, w = x.get_shape().as_list()[1:3]
-#         val = tf.reduce_sum(logs) * h * w
-#         if backward:
-#             return -val
-#         else:
-#             return val
-#
-#     with tf.variable_scope(name, reuse=(not init)):
-#         t = tf.get_variable("t", (1, 1, 1, gs(x)[-1]), trainable=True)
-#         logs = tf.get_variable("logs", (1, 1, 1, gs(x)[-1]), trainable=True)
-#         if init:
-#             x_mean, x_var = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=True)
-#             logs_init = tf.log(1. / (tf.sqrt(x_var) + eps))
-#             t_init = -tf.exp(logs_init) * x_mean
-#             logsop = logs.assign(logs_init)
-#             top = t.assign(t_init)
-#             with tf.control_dependencies([logsop, top]):
-#                 an = compute(x, logs_init, t_init)
-#         else:
-#             an = compute(x, logs, t)
-#
-#         if logdet:
-#             return an, ld(x, logs)
-#         else:
-#             return an
-
-# def actnorm(x, name, init=False, eps=1e-6, logdet=False, backward=False):
-#     def compute(x, s, t):
-#         if backward:
-#             return (x - t) / s
-#         else:
-#             return x * s + t
-#     def ld(x, s):
-#         h, w = x.get_shape().as_list()[1:3]
-#         val = tf.reduce_sum(tf.log(tf.abs(s) + eps)) * h * w
-#         if backward:
-#             return -val
-#         else:
-#             return val
-#
-#     with tf.variable_scope(name, reuse=(not init)):
-#         t = tf.get_variable("t", (1, 1, 1, gs(x)[-1]), trainable=True)
-#         s = tf.get_variable("s", (1, 1, 1, gs(x)[-1]), trainable=True)
-#         if init:
-#             x_mean, x_var = tf.nn.moments(x, axes=[0, 1, 2], keep_dims=True)
-#             s_init = 1. / (tf.sqrt(x_var) + eps)
-#             t_init = -s_init * x_mean
-#             sop = s.assign(s_init)
-#             top = t.assign(t_init)
-#             with tf.control_dependencies([sop, top]):
-#                 an = compute(x, s_init, t_init)
-#         else:
-#             an = compute(x, s, t)
-#
-#         if logdet:
-#             return an, ld(x, s)
-#         else:
-#             return an
 
 
 def net(x, name, depth, init=False):
@@ -321,7 +230,6 @@ def postprocess(x, n_bits_x=5):
 if __name__ == "__main__":
     mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
     # load data and convert to char
-    #cvt = lambda x: np.tile(((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1]), (1, 1, 1, 3))
     cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])
     data = cvt(mnist.train.images)
     data_test = cvt(mnist.test.images)
@@ -381,9 +289,6 @@ if __name__ == "__main__":
     sess.run(z_init, feed_dict={x: init_batch})
     train_writer = tf.summary.FileWriter("/tmp/train/train")
     test_writer = tf.summary.FileWriter("/tmp/train/test")
-    #train_writer = tf.summary.FileWriter("/root/results/train/summary/train")
-    #test_writer = tf.summary.FileWriter("/root/results/train/summary/test")
-
 
     n_epochs = 10000
     batch_size = 128

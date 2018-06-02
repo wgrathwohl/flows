@@ -3,6 +3,8 @@ from tensorflow.examples.tutorials.mnist import input_data
 import numpy as np
 import scipy.io
 import cv2
+import os
+import pickle
 
 
 class Dataset(object):
@@ -24,7 +26,6 @@ class Dataset(object):
         ds_x, ds_y = tf.data.Dataset.from_tensor_slices(x), tf.data.Dataset.from_tensor_slices(y)
         ds_x = ds_x.map(aug)
         ds = tf.data.Dataset.zip((ds_x, ds_y))
-        #ds = ds.shuffle(x.shape[0])
         ds = ds.batch(batch_size)
         return ds
 
@@ -54,10 +55,29 @@ class MNISTDataset(Dataset):
 
 class CIFAR10Dataset(Dataset):
     def __init__(self, batch_size):
-        (trainx, trainy), (testx, testy) = tf.keras.datasets.cifar10.load_data()
+        def load(f):
+            with open(f, 'rb') as f:
+                stuff = pickle.load(f, encoding="bytes")
+                return stuff[b'data'], stuff[b'labels']
+
+        dname = 'cifar-10-batches-py'
+        tr_names = ['data_batch_1', 'data_batch_2', 'data_batch_3', 'data_batch_4', 'data_batch_5']
+        tr_names = [os.path.join(dname, tr) for tr in tr_names]
+        te_name = os.path.join(dname, "test_batch")
+        train_data = [load(f) for f in tr_names]
+        trainx = [td[0] for td in train_data]
+        trainy = [td[1] for td in train_data]
+        trainx = np.concatenate(trainx)
+        trainy = np.concatenate(trainy)
+        testx, testy = load(te_name)
+        trainx = trainx.reshape([-1, 3, 32, 32])
+        testx = testx.reshape([-1, 3, 32, 32])
+        trainx = np.transpose(trainx, [0, 2, 3, 1])
+        testx = np.transpose(testx, [0, 2, 3, 1])
         trainx = trainx[:, :, :, ::-1]
         testx = testx[:, :, :, ::-1]
-        testy = testy.astype(np.uint8)
+        trainy = np.array(trainy, dtype=np.uint8)
+        testy = np.array(testy, dtype=np.uint8)
 
         def train_aug(x):
             x = tf.image.random_flip_left_right(x)
@@ -122,10 +142,11 @@ if __name__ == "__main__":
     #
     # 1/0
 
-    #dataset = CIFAR10Dataset(10)
-    dataset = SVHNDataset(10)
-    init = dataset.train_iterator.initializer
-    x, y = dataset.train_iterator.get_next()
+    dataset = CIFAR10Dataset(10)
+    #dataset = SVHNDataset(10)
+    iterator = dataset.train.make_initializable_iterator()
+    init = iterator.initializer
+    x, y = iterator.get_next()
     sess = tf.Session()
     for i in range(100):
         print(i)

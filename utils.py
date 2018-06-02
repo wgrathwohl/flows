@@ -9,21 +9,20 @@ class Dataset(object):
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
                  train_aug=lambda x: x, test_aug=lambda x: x):
-        self.train_iterator = self._create_iterator(trainx, trainy, train_aug, batch_size)
-        self.test_iterator = self._create_iterator(testx, testy, test_aug, batch_size)
+        self.train = self._create(trainx, trainy, train_aug, batch_size)
+        self.test = self._create(testx, testy, test_aug, batch_size)
         if valx is not None:
-            self.valid_iterator = self._create_iterator(valx, valy, test_aug, batch_size)
+            self.valid = self._create(valx, valy, test_aug, batch_size)
         else:
-            self.valid_iterator = None
+            self.valid = None
 
-    def _create_iterator(self, x, y, aug, batch_size):
+    def _create(self, x, y, aug, batch_size):
         ds_x, ds_y = tf.data.Dataset.from_tensor_slices(x), tf.data.Dataset.from_tensor_slices(y)
         ds_x = ds_x.map(aug)
         ds = tf.data.Dataset.zip((ds_x, ds_y))
         ds = ds.shuffle(x.shape[0])
         ds = ds.batch(batch_size)
-        iterator = ds.make_initializable_iterator()
-        return iterator
+        return ds
 
 
 class MNISTDataset(Dataset):
@@ -54,6 +53,7 @@ class CIFAR10Dataset(Dataset):
         (trainx, trainy), (testx, testy) = tf.keras.datasets.cifar10.load_data()
         trainx = trainx[:, :, :, ::-1]
         testx = testx[:, :, :, ::-1]
+        testy = testy.astype(np.uint8)
 
         def train_aug(x):
             x = tf.image.random_flip_left_right(x)

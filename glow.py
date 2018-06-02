@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow.examples.tutorials.mnist import input_data
+import utils
 
 
 def gs(x):
@@ -158,11 +158,11 @@ def flow_step(in_feats, name, init=False, backward=False):
             y = in_feats
             x, logdet_coupling = coupling_layer(y, "coupling", init=init, backward=True)
             x, logdet_invconv = invconv_layer(x, "invconv", init=init, backward=True)
-            x, logdet_actnorm = actnorm(x, "actnorm", init=init, logdet=True, backward=True)
+            x, logdet_actnorm = actnorm(x, "actnorm", init=init, return_logdet=True, backward=True)
             return x, logdet_actnorm + logdet_invconv + logdet_coupling
         else:
             x = in_feats
-            x, logdet_actnorm = actnorm(x, "actnorm", init=init, logdet=True, backward=False)
+            x, logdet_actnorm = actnorm(x, "actnorm", init=init, return_logdet=True, backward=False)
             x, logdet_invconv = invconv_layer(x, "invconv", init=init, backward=False)
             y, logdet_coupling = coupling_layer(x, "coupling", init=init, backward=False)
             return y, logdet_actnorm + logdet_invconv + logdet_coupling
@@ -260,26 +260,27 @@ def logpx(zs, logdet):
 
 
 if __name__ == "__main__":
-    mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
-    # load data and convert to char
-    cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])
-    data = cvt(mnist.train.images)
-    data_test = cvt(mnist.test.images)
+    dataset_fn = utils.CIFAR10Dataset
+    init_dataset = dataset_fn(1024)
+    dataset = dataset_fn(128)
 
-    inds = list(range(data.shape[0]))
-    test_inds = list(range(data_test.shape[0]))
     n_bits_x = 5
+    batch_size = 128
+    n_epochs = 10000
+    warm_up_epochs = 10
+    base_lr = .001
 
-    np.random.shuffle(inds)
-    init_inds = inds[:1024]
-    init_batch = data[init_inds]
-    init_batch = pad_batch(init_batch)
+    #init_x = preprocess(init_dataset.train_iterator.get_next()[0], n_bits_x=n_bits_x)
+    iterator = tf.data.Iterator.from_structure(init_dataset.train.output_types,
+                                               init_dataset.train.output_shapes)
+    train_init_op = iterator.make_initializer(dataset.train)
+    init_init_op = iterator.make_initializer(init_dataset.train)
+    test_init_op = iterator.make_initializer(dataset.test)
+
+    x = iterator.get_next()[0]
+    xpp = preprocess(x, n_bits_x=n_bits_x)
     
     sess = tf.Session()
-
-    x = tf.placeholder(tf.uint8, [None, 32, 32, 1], name="x")
-    # clip to 5 bits
-    xpp = preprocess(x, n_bits_x=n_bits_x)
 
     z_init, _ = net(xpp, "net", 3, 8, init=True)
     z, logdet_orig = net(xpp, "net", 3, 8)
@@ -307,47 +308,50 @@ if __name__ == "__main__":
     opt = optim.minimize(loss)
 
     # summary for loss, etc
-    tf.summary.scalar("loss", loss)
+    loss_summary = tf.summary.scalar("loss", loss)
     tf.summary.scalar("recons", recons_error)
     tf.summary.scalar("lr", lr)
     tf.summary.scalar("bits_x", bits_x)
     sum_op = tf.summary.merge_all()
 
     sess.run(tf.global_variables_initializer())
+    sess.run(init_init_op)
     # initialize act-norm parameters
-    sess.run(z_init, feed_dict={x: init_batch})
+    sess.run(z_init)
     train_writer = tf.summary.FileWriter("/tmp/train/train")
     test_writer = tf.summary.FileWriter("/tmp/train/test")
-
-    n_epochs = 10000
-    batch_size = 128
-    n_data = data.shape[0]
-    n_iters = n_data // batch_size
-    warm_up_epochs = 10
-    warm_up_iters = n_iters * warm_up_epochs
-    base_lr = .001
 
 
     iter = 0
     for epoch in range(n_epochs):
-        np.random.shuffle(inds)
-        for i in range(n_iters):
-            batch_inds = inds[i * batch_size: (i + 1) * batch_size]
-            batch = data[batch_inds]
-            batch = pad_batch(batch)
-            iter_lr = base_lr * (float(iter) / warm_up_iters) if iter < warm_up_iters else base_lr
-            if iter % 100 == 0:
-                re, _l, _, sstr = sess.run([recons_error, loss, opt, sum_op],
-                                                 feed_dict={x: batch, lr: iter_lr})
-                train_writer.add_summary(sstr, iter)
-                test_batch_inds = np.random.choice(test_inds, 128, replace=False)
-                test_batch = data_test[test_batch_inds]
-                test_batch = pad_batch(test_batch)
-                sstr = sess.run(sum_op, feed_dict={x: test_batch, lr: iter_lr})
-                test_writer.add_summary(sstr, iter)
-                print(iter, _l, re)
+        sess.run(train_init_op)
+        while True:
+            try:
+                iter_lr = base_lr * (epoch + 1) / float(warm_up_epochs) if epoch < warm_up_epochs + 1 else base_lr
+                if iter % 100 == 0:
+                    re, _l, _, sstr = sess.run([recons_error, loss, opt, sum_op], feed_dict={lr: iter_lr})
+                    train_writer.add_summary(sstr, iter)
+                    print(iter, _l, re)
 
-            else:
-                _ = sess.run(sum_op, feed_dict={x: batch, lr: iter_lr})
+                else:
+                    _ = sess.run(opt, feed_dict={lr: iter_lr})
 
-            iter += 1
+                iter += 1
+            except tf.errors.OutOfRangeError:
+                break
+
+        # run test set every 10 epochs
+        if True:#: epoch % 10 == 0:
+            sess.run(test_init_op)
+            test_loss = []
+            while True:
+                try:
+                    _l = sess.run(loss)
+                    test_loss.append(_l)
+                except tf.errors.OutOfRangeError:
+                    # at epoch end
+                    test_loss = np.mean(test_loss)
+                    sstr = sess.run(loss_summary, feed_dict={loss: test_loss})
+                    test_writer.add_summary(sstr, iter)
+
+        1/0

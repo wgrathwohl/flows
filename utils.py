@@ -17,10 +17,14 @@ class Dataset(object):
             self.valid = None
 
     def _create(self, x, y, aug, batch_size):
+        inds = list(range(len(x)))
+        np.random.shuffle(inds)
+        x = x[inds]
+        y = y[inds]
         ds_x, ds_y = tf.data.Dataset.from_tensor_slices(x), tf.data.Dataset.from_tensor_slices(y)
         ds_x = ds_x.map(aug)
         ds = tf.data.Dataset.zip((ds_x, ds_y))
-        ds = ds.shuffle(x.shape[0])
+        #ds = ds.shuffle(x.shape[0])
         ds = ds.batch(batch_size)
         return ds
 

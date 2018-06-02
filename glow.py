@@ -260,7 +260,7 @@ def logpx(zs, logdet):
 
 
 if __name__ == "__main__":
-    dataset_fn = utils.CIFAR10Dataset
+    dataset_fn = utils.SVHNDataset
     init_dataset = dataset_fn(1024)
     dataset = dataset_fn(128)
 
@@ -341,7 +341,7 @@ if __name__ == "__main__":
                 break
 
         # run test set every 10 epochs
-        if True:#: epoch % 10 == 0:
+        if epoch % 10 == 0:
             sess.run(test_init_op)
             test_loss = []
             while True:
@@ -353,5 +353,4 @@ if __name__ == "__main__":
                     test_loss = np.mean(test_loss)
                     sstr = sess.run(loss_summary, feed_dict={loss: test_loss})
                     test_writer.add_summary(sstr, iter)
-
-        1/0
+                    break

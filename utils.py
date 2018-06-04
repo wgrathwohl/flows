@@ -10,13 +10,21 @@ import pickle
 class Dataset(object):
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
-                 train_aug=lambda x: x, test_aug=lambda x: x):
+                 train_aug=lambda x: x, test_aug=lambda x: x, init_size=None):
         self.train = self._create(trainx, trainy, train_aug, batch_size)
         self.test = self._create(testx, testy, test_aug, batch_size)
+        self.iterator = tf.data.Iterator.from_structure(self.train.output_types, self.train.output_shapes)
+        self.train_init_op = self.iterator.make_initializer(self.train)
+        self.test_init_op = self.iterator.make_initializer(self.test)
         if valx is not None:
             self.valid = self._create(valx, valy, test_aug, batch_size)
+            self.valid_init_op = self.iterator.make_initializer(self.valid)
         else:
             self.valid = None
+
+        if init_size is not None:
+            self.init = self._create(trainx, trainy, train_aug, init_size)
+            self.init_init_op = self.iterator.make_initializer(self.init)
 
     def _create(self, x, y, aug, batch_size):
         inds = list(range(len(x)))
@@ -31,7 +39,7 @@ class Dataset(object):
 
 
 class MNISTDataset(Dataset):
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, init_size=None):
         def train_aug(x):
             x = tf.image.resize_image_with_crop_or_pad(x, 36, 36)
             x = tf.random_crop(x, [32, 32, 1])
@@ -49,12 +57,13 @@ class MNISTDataset(Dataset):
             testx,  mnist.test.labels,
             batch_size,
             valx=valx, valy=mnist.validation.labels,
-            train_aug=train_aug, test_aug=test_aug
+            train_aug=train_aug, test_aug=test_aug, init_size=init_size
         )
+        self.n_class = 10
 
 
 class CIFAR10Dataset(Dataset):
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, init_size=None):
         def load(f):
             with open(f, 'rb') as f:
                 stuff = pickle.load(f, encoding="bytes")
@@ -89,11 +98,13 @@ class CIFAR10Dataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug
+            train_aug=train_aug, init_size=init_size
         )
+        self.n_class = 10
+
 
 class SVHNDataset(Dataset):
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, init_size=None):
         train = scipy.io.loadmat("SVHN_data/train_32x32.mat")
         trainx, trainy = train['X'], train['y']
         trainx = trainx.transpose((3, 0, 1, 2))
@@ -110,15 +121,38 @@ class SVHNDataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug
+            train_aug=train_aug, init_size=init_size
         )
+        self.n_class = 10
 
 
+def gs(x):
+    return x.get_shape().as_list()
 
+
+def normal_logpdf(x, mu, logvar):
+    logp = -.5 * (np.log(2. * np.pi) + logvar + ((x - mu) ** 2) / tf.exp(logvar))
+    return logp
+
+
+def mog_sample(mus, shape, stddev=1.):
+    n_class = gs(mus)[0]
+    inds = tf.one_hot(tf.argmax(tf.random_uniform([shape[0], n_class]), axis=1), n_class)
+    chosen_mus = tf.reduce_sum(mus[None, :, :, :, :] * inds[:, :, None, None, None], axis=1)
+    samples = tf.random_normal(shape, stddev=stddev) + chosen_mus
+    return samples
 
 
 
 if __name__ == "__main__":
+
+    sess = tf.Session()
+    mus = tf.random_normal([2, 5, 5, 3])
+    z = tf.random_normal([13, 5, 5, 3])
+    shape = tf.shape(z)
+    sample = mog_sample(mus, shape)
+    s = sess.run(sample)
+    print(s.shape)
     # mnist = input_data.read_data_sets("MNIST_data")
     # # load data and convert to char
     # cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])
@@ -142,26 +176,26 @@ if __name__ == "__main__":
     #
     # 1/0
 
-    dataset = CIFAR10Dataset(10)
-    #dataset = SVHNDataset(10)
-    iterator = dataset.train.make_initializable_iterator()
-    init = iterator.initializer
-    x, y = iterator.get_next()
-    sess = tf.Session()
-    for i in range(100):
-        print(i)
-        sess.run(init)
-        while True:
-            try:
-                res = sess.run(x)
-                for im in res:
-                    cv2.imshow("im", im)
-                    cv2.waitKey(0)
-                print('batch', res.shape)
-            except tf.errors.OutOfRangeError:
-                print("reinit")
-                break
-
-        # for im in res:
-        #     cv2.imshow("im", im)
-        #     cv2.waitKey(0)
+    # dataset = CIFAR10Dataset(10)
+    # #dataset = SVHNDataset(10)
+    # iterator = dataset.train.make_initializable_iterator()
+    # init = iterator.initializer
+    # x, y = iterator.get_next()
+    # sess = tf.Session()
+    # for i in range(100):
+    #     print(i)
+    #     sess.run(init)
+    #     while True:
+    #         try:
+    #             res = sess.run(x)
+    #             for im in res:
+    #                 cv2.imshow("im", im)
+    #                 cv2.waitKey(0)
+    #             print('batch', res.shape)
+    #         except tf.errors.OutOfRangeError:
+    #             print("reinit")
+    #             break
+    #
+    #     # for im in res:
+    #     #     cv2.imshow("im", im)
+    #     #     cv2.waitKey(0)

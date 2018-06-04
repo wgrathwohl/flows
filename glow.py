@@ -1,10 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import utils
-
-
-def gs(x):
-    return x.get_shape().as_list()
+from utils import gs
 
 
 def name_var(x, name):
@@ -102,11 +99,11 @@ def combine(x1, x2):
     return tf.concat([x1, x2], axis=3)
 
 
-def coupling_layer(in_feats, name, init=False, backward=False, eps=1e-6):
+def coupling_layer(in_feats, name, init=False, backward=False, eps=1e-6, dim=32):
     def get_vars(feats):
-        logit_s = NN(feats, "logit_s", init=init) + 2.
+        logit_s = NN(feats, "logit_s", init=init, dim=dim) + 2.
         s = tf.sigmoid(logit_s) + eps
-        t = NN(feats, "t", init=init)
+        t = NN(feats, "t", init=init, dim=dim)
         logdet = tf.reduce_sum(tf.log_sigmoid(logit_s), axis=[1, 2, 3])
         return s, t, logdet
 
@@ -152,11 +149,11 @@ def invconv_layer(in_feats, name, init=False, backward=False, eps=1e-6):
             return y, logdet
 
 
-def flow_step(in_feats, name, init=False, backward=False):
+def flow_step(in_feats, name, init=False, backward=False, dim=32):
     with tf.variable_scope(name, reuse=(not init)):
         if backward:
             y = in_feats
-            x, logdet_coupling = coupling_layer(y, "coupling", init=init, backward=True)
+            x, logdet_coupling = coupling_layer(y, "coupling", init=init, backward=True, dim=dim)
             x, logdet_invconv = invconv_layer(x, "invconv", init=init, backward=True)
             x, logdet_actnorm = actnorm(x, "actnorm", init=init, return_logdet=True, backward=True)
             return x, logdet_actnorm + logdet_invconv + logdet_coupling
@@ -164,17 +161,17 @@ def flow_step(in_feats, name, init=False, backward=False):
             x = in_feats
             x, logdet_actnorm = actnorm(x, "actnorm", init=init, return_logdet=True, backward=False)
             x, logdet_invconv = invconv_layer(x, "invconv", init=init, backward=False)
-            y, logdet_coupling = coupling_layer(x, "coupling", init=init, backward=False)
+            y, logdet_coupling = coupling_layer(x, "coupling", init=init, backward=False, dim=dim)
             return y, logdet_actnorm + logdet_invconv + logdet_coupling
 
 
-def scale_block(in_feats, name, flow_steps, init=False, backward=False):
+def scale_block(in_feats, name, flow_steps, init=False, backward=False, dim=32):
     with tf.variable_scope(name, reuse=(not init)):
         if backward:
             z = in_feats
             logdet = 0.
             for i in reversed(range(flow_steps)):
-                z, step_logdet = flow_step(z, "step{}".format(i), init=init, backward=True)
+                z, step_logdet = flow_step(z, "step{}".format(i), init=init, backward=True, dim=dim)
                 logdet += step_logdet
             x = squeeze(z, backward=True)
             return x, logdet
@@ -183,19 +180,19 @@ def scale_block(in_feats, name, flow_steps, init=False, backward=False):
             z = squeeze(x, backward=False)
             logdet = 0.
             for i in range(flow_steps):
-                z, step_logdet = flow_step(z, "step{}".format(i), init=init, backward=False)
+                z, step_logdet = flow_step(z, "step{}".format(i), init=init, backward=False, dim=dim)
                 logdet += step_logdet
             return z, logdet
 
 
-def net(in_feats, name, num_blocks, flow_steps, init=False, backward=False):
+def net(in_feats, name, num_blocks, flow_steps, init=False, backward=False, width=32):
     with tf.variable_scope(name, reuse=(not init)):
         if backward:
             zs = in_feats
             logdet = 0.
             z = zs[-1]
             for i in reversed(range(num_blocks)):
-                z, block_logdet = scale_block(z, "block{}".format(i), flow_steps, init=init, backward=True)
+                z, block_logdet = scale_block(z, "block{}".format(i), flow_steps, init=init, backward=True, dim=width)
                 logdet += block_logdet
                 if i > 0:
                     zi = zs[i - 1]
@@ -206,7 +203,7 @@ def net(in_feats, name, num_blocks, flow_steps, init=False, backward=False):
             logdet = 0.
             zs = []
             for i in range(num_blocks):
-                z, block_logdet = scale_block(z, "block{}".format(i), flow_steps, init=init, backward=False)
+                z, block_logdet = scale_block(z, "block{}".format(i), flow_steps, init=init, backward=False, dim=width)
                 logdet += block_logdet
                 if i == num_blocks - 1:
                     zs.append(z)
@@ -214,22 +211,6 @@ def net(in_feats, name, num_blocks, flow_steps, init=False, backward=False):
                     z, zi = split(z)
                     zs.append(zi)
             return zs, logdet
-
-
-def normal_logpdf(x, mu, logvar):
-    logp = -.5 * (np.log(2. * np.pi) + logvar + ((x - mu) ** 2) / tf.exp(logvar))
-    return logp
-
-
-def pad_batch(batch):
-    bs = batch.shape[0]
-    pads = np.random.randint(4, size=(bs, 2))
-    padded = []
-    for (px, py), im in zip(pads, batch):
-        im_pad = np.zeros((32, 32, 1), dtype=np.uint8)
-        im_pad[px: px + 28, py: py + 28, :] = im
-        padded.append(im_pad)
-    return np.array(padded)
 
 
 def preprocess(x, n_bits_x=5):
@@ -250,7 +231,7 @@ def postprocess(x, n_bits_x=5):
 
 
 def logpx(zs, logdet):
-    logpz = tf.add_n([tf.reduce_sum(normal_logpdf(z, 0., 0.), axis=[1, 2, 3]) for z in zs])
+    logpz = tf.add_n([tf.reduce_sum(utils.normal_logpdf(z, 0., 0.), axis=[1, 2, 3]) for z in zs])
     ave_logpz = tf.reduce_mean(logpz)
     ave_logdet = tf.reduce_mean(logdet)
     total_logprob = (ave_logpz + ave_logdet)

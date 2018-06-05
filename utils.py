@@ -14,17 +14,17 @@ class Dataset(object):
         self.train = self._create(trainx, trainy, train_aug, batch_size)
         self.test = self._create(testx, testy, test_aug, batch_size)
         self.iterator = tf.data.Iterator.from_structure(self.train.output_types, self.train.output_shapes)
-        self.train_init_op = self.iterator.make_initializer(self.train)
-        self.test_init_op = self.iterator.make_initializer(self.test)
+        self.use_train = self.iterator.make_initializer(self.train)
+        self.use_test = self.iterator.make_initializer(self.test)
         if valx is not None:
             self.valid = self._create(valx, valy, test_aug, batch_size)
-            self.valid_init_op = self.iterator.make_initializer(self.valid)
+            self.use_valid = self.iterator.make_initializer(self.valid)
         else:
             self.valid = None
 
         if init_size is not None:
             self.init = self._create(trainx, trainy, train_aug, init_size)
-            self.init_init_op = self.iterator.make_initializer(self.init)
+            self.use_init = self.iterator.make_initializer(self.init)
 
     def _create(self, x, y, aug, batch_size):
         inds = list(range(len(x)))
@@ -47,7 +47,7 @@ class MNISTDataset(Dataset):
         def test_aug(x):
             return tf.image.resize_image_with_crop_or_pad(x, 32, 32)
         cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])
-        mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
+        mnist = input_data.read_data_sets("MNIST_data")
         trainx = cvt(mnist.train.images)
         valx = cvt(mnist.validation.images)
         testx = cvt(mnist.test.images)

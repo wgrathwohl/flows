@@ -89,8 +89,12 @@ if __name__ == "__main__":
     tf.summary.scalar("lr", lr)
     loss_summary = tf.summary.scalar("loss", loss)
     acc_summary = tf.summary.scalar("accuracy", accuracy)
+    tf.summary.scalar("logdet", tf.reduce_mean(logdet))
+    tf.summary.scalar("logpz", tf.reduce_mean(logpz_given_y))
+    tf.summary.scalar("disc_objective", disc_objective)
+    tf.summary.scalar("gen_objective", gen_objective)
     train_summary = tf.summary.merge_all()
-    test_summary = tf.group([loss_summary, acc_summary])
+    test_summary = tf.summary.merge([loss_summary, acc_summary])
 
     # initialize variables
     sess.run(tf.global_variables_initializer())
@@ -136,6 +140,7 @@ if __name__ == "__main__":
                     # at epoch end
                     test_loss = np.mean(test_loss)
                     test_acc = np.mean(test_acc)
+                    print("Test loss: {}, Test acc: {}".format(test_loss, test_acc))
                     sstr = sess.run(test_summary, feed_dict={loss: test_loss, accuracy: test_acc})
                     test_writer.add_summary(sstr, cur_iter)
                     break

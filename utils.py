@@ -1,5 +1,5 @@
 import tensorflow as tf
-#from tensorflow.examples.tutorials.mnist import input_data
+from tensorflow.examples.tutorials.mnist import input_data
 import numpy as np
 import scipy.io
 import cv2

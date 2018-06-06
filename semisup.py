@@ -1,6 +1,7 @@
 from glow import *
 import argparse
 import os
+import time
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -109,6 +110,7 @@ if __name__ == "__main__":
     cur_iter = 0
     for epoch in range(args.epochs):
         sess.run(dataset.use_train)
+        t_start = time.time()
         while True:
             try:
                 cur_lr = (args.lr * (epoch + 1) / args.epochs_warmup) if epoch < args.epochs_warmup + 1 else args.lr
@@ -123,11 +125,11 @@ if __name__ == "__main__":
 
                 cur_iter += 1
             except tf.errors.OutOfRangeError:
-                print("Completed epoch {}".format(epoch))
+                print("Completed epoch {} in {}".format(epoch, time.time() - t_start))
                 break
 
         # run test set every 10 epochs
-        if epoch % 10 == 0:
+        if epoch % args.epochs_valid == 0:
             sess.run(dataset.use_test)
             test_loss = []
             test_acc = []

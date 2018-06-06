@@ -27,13 +27,15 @@ class Dataset(object):
             self.use_init = self.iterator.make_initializer(self.init)
 
     def _create(self, x, y, aug, batch_size):
-        inds = list(range(len(x)))
-        np.random.shuffle(inds)
-        x = x[inds]
-        y = y[inds]
-        ds_x, ds_y = tf.data.Dataset.from_tensor_slices(x), tf.data.Dataset.from_tensor_slices(y)
+        ds_x = tf.data.Dataset.from_tensor_slices(x)
         ds_x = ds_x.map(aug)
-        ds = tf.data.Dataset.zip((ds_x, ds_y))
+        if y is None:
+            ds = ds_x
+        else:
+            ds_y = tf.data.Dataset.from_tensor_slices(y)
+            ds = tf.data.Dataset.zip((ds_x, ds_y))
+
+        ds = ds.shuffle(len(x))
         ds = ds.batch(batch_size)
         return ds
 
@@ -83,8 +85,8 @@ class CIFAR10Dataset(Dataset):
         testx = testx.reshape([-1, 3, 32, 32])
         trainx = np.transpose(trainx, [0, 2, 3, 1])
         testx = np.transpose(testx, [0, 2, 3, 1])
-        trainx = trainx[:, :, :, ::-1]
-        testx = testx[:, :, :, ::-1]
+        #trainx = trainx[:, :, :, ::-1]
+        #testx = testx[:, :, :, ::-1]
         trainy = np.array(trainy, dtype=np.uint8)
         testy = np.array(testy, dtype=np.uint8)
 

@@ -5,13 +5,41 @@ import scipy.io
 import cv2
 import os
 import pickle
+from collections import defaultdict
 
 
 class Dataset(object):
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
-                 train_aug=lambda x: x, test_aug=lambda x: x, init_size=None):
-        self.train = self._create(trainx, trainy, train_aug, batch_size)
+                 train_aug=lambda x: x, test_aug=lambda x: x,
+                 init_size=None, num_labels=None, seed=1234):
+        if num_labels is None:
+            self.train = self._create(trainx, trainy, train_aug, batch_size)
+        else:
+            data_dict = defaultdict(list)
+            for x, y in zip(trainx, trainy):
+                data_dict[y].append(x)
+
+            n_class = len(data_dict.keys())
+            assert num_labels % n_class == 0, "num classes must divide num labels"
+            n_per_class = num_labels // n_class
+            xs_l = []
+            xs_u = []
+            y_l = []
+            for y in data_dict.keys():
+                xs = data_dict[y]
+                np.random.shuffle(xs)
+                xs_l.extend(xs[:n_per_class])
+                xs_u.extend(xs[n_per_class:])
+                y_l.extend([y] * n_per_class)
+
+            xs_l = np.array(xs_l, dtype=trainx.dtype)
+            xs_u = np.array(xs_u, dtype=trainx.dtype)
+            y_l = np.array(y_l, dtype=trainy.dtype)
+            self.train = self._create(xs_l, y_l, train_aug, batch_size)
+
+
+
         self.test = self._create(testx, testy, test_aug, batch_size)
         self.iterator = tf.data.Iterator.from_structure(self.train.output_types, self.train.output_shapes)
         self.use_train = self.iterator.make_initializer(self.train)
@@ -148,13 +176,15 @@ def mog_sample(mus, shape, stddev=1.):
 
 if __name__ == "__main__":
 
-    sess = tf.Session()
-    mus = tf.random_normal([2, 5, 5, 3])
-    z = tf.random_normal([13, 5, 5, 3])
-    shape = tf.shape(z)
-    sample = mog_sample(mus, shape)
-    s = sess.run(sample)
-    print(s.shape)
+    dataset = SVHNDataset(128)
+
+    # sess = tf.Session()
+    # mus = tf.random_normal([2, 5, 5, 3])
+    # z = tf.random_normal([13, 5, 5, 3])
+    # shape = tf.shape(z)
+    # sample = mog_sample(mus, shape)
+    # s = sess.run(sample)
+    # print(s.shape)
     # mnist = input_data.read_data_sets("MNIST_data")
     # # load data and convert to char
     # cvt = lambda x: ((255 * x).astype(np.uint8)).reshape([-1, 28, 28, 1])

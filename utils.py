@@ -8,69 +8,105 @@ import pickle
 from collections import defaultdict
 
 
+def split_dataset(xs, ys, n_labels, seed=1234):
+    data_dict = defaultdict(list)
+    for x, y in zip(xs, ys):
+        data_dict[y].append(x)
+    np.random.seed(seed)
+    xs_u = []
+    xs_l = []
+    ys_l = []
+    n_class = len(data_dict.keys())
+    assert n_labels % n_class == 0, "num class must divide num labels"
+    n_per_class = n_labels // n_class
+    for y in data_dict.keys():
+        cur_xs = data_dict[y]
+        np.random.shuffle(cur_xs)
+        cur_xs_l = cur_xs[:n_per_class]
+        cur_xs_u = cur_xs[n_per_class:]
+        xs_u.extend(cur_xs_u)
+        xs_l.extend(cur_xs_l)
+        ys_l.extend([y] * n_per_class)
+    xs_l = np.array(xs_l, dtype=xs.dtype)
+    xs_u = np.array(xs_u, dtype=xs.dtype)
+    ys_l = np.array(ys_l, dtype=ys.dtype)
+    return xs_u, xs_l, ys_l
+
+
+def create_dataset(x, y, aug, batch_size, shuffle=True, repeat=False):
+    ds_x = tf.data.Dataset.from_tensor_slices(x)
+    ds_x = ds_x.map(aug)
+    if y is None:
+        ds = ds_x
+    else:
+        ds_y = tf.data.Dataset.from_tensor_slices(y)
+        ds = tf.data.Dataset.zip((ds_x, ds_y))
+
+    if shuffle:
+        ds = ds.shuffle(len(x))
+
+    if repeat:
+        ds = ds.repeat()
+
+    ds = ds.batch(batch_size)
+    return ds
+
+
 class Dataset(object):
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
                  train_aug=lambda x: x, test_aug=lambda x: x,
-                 init_size=None, num_labels=None, seed=1234):
-        if num_labels is None:
-            self.train = self._create(trainx, trainy, train_aug, batch_size)
+                 init_size=None, n_labels=None):
+        # store original trainx so we can use it go generate a large init batch
+        # since no labels are used in initialization, this is ok
+        x_orig, y_orig = trainx, trainy
+        # if using unlabeled data sample labeled batches of size bs_l and unlabeled batches of size bs_u
+        # such that bs_u + bs_l = batch_size
+        if n_labels is not None:
+            trainx_unlabeled, trainx, trainy = split_dataset(trainx, trainy, n_labels)
+            n_train_all = len(trainx) + len(trainx_unlabeled)
+            label_frac = float(len(trainx)) / n_train_all
+            bs_l = max(int(label_frac * batch_size), 1)
+            bs_u = batch_size - bs_l
+            train_u = create_dataset(trainx_unlabeled, None, train_aug, bs_u)
+            iterator_u = tf.data.Iterator.from_structure(train_u.output_types, train_u.output_shapes)
+            self.x_u = iterator_u.get_next()
+            use_train_u = iterator_u.make_initializer(train_u)
+            self.n_train_u = len(trainx_unlabeled)
+            # if we are using unlabeled data, we use the unlabeled set to tell us when an epoch has ended
+            # since the labeled dataset is much smaller, we want at least one labled example in a batch
+            # so we have to plan for the train dataset to loop through at least once every time for every epoch
+            train_repeat = True
         else:
-            PUT ALL THIS IN A DIFFERENT FUNCTION AND JUST HAVE TRAINX_UNLABELED AS AN ARG TO THE CONSTRUCTOR
-            data_dict = defaultdict(list)
-            for x, y in zip(trainx, trainy):
-                data_dict[y].append(x)
+            train_repeat = False
+            bs_l = batch_size
+            self.x_u = None
 
-            n_class = len(data_dict.keys())
-            assert num_labels % n_class == 0, "num classes must divide num labels"
-            n_per_class = num_labels // n_class
-            xs_l = []
-            xs_u = []
-            y_l = []
-            for y in data_dict.keys():
-                xs = data_dict[y]
-                np.random.shuffle(xs)
-                xs_l.extend(xs[:n_per_class])
-                xs_u.extend(xs[n_per_class:])
-                y_l.extend([y] * n_per_class)
+        self.n_train_l = len(trainx)
+        train = create_dataset(trainx, trainy, train_aug, bs_l, repeat=train_repeat)
+        test = create_dataset(testx, testy, test_aug, batch_size, shuffle=False)
+        iterator = tf.data.Iterator.from_structure(train.output_types, train.output_shapes)
+        self.x, self.y = iterator.get_next()
+        self.use_train = iterator.make_initializer(train)
+        # if using unlabeled data, group reset ops for labeled and unlabeled training data
+        if n_labels is not None:
+            self.use_train = tf.group([self.use_train, use_train_u])
 
-            xs_l = np.array(xs_l, dtype=trainx.dtype)
-            xs_u = np.array(xs_u, dtype=trainx.dtype)
-            y_l = np.array(y_l, dtype=trainy.dtype)
-            self.train = self._create(xs_l, y_l, train_aug, batch_size)
-
-
-
-        self.test = self._create(testx, testy, test_aug, batch_size)
-        self.iterator = tf.data.Iterator.from_structure(self.train.output_types, self.train.output_shapes)
-        self.use_train = self.iterator.make_initializer(self.train)
-        self.use_test = self.iterator.make_initializer(self.test)
+        self.use_test = iterator.make_initializer(test)
         if valx is not None:
-            self.valid = self._create(valx, valy, test_aug, batch_size)
-            self.use_valid = self.iterator.make_initializer(self.valid)
+            valid = create_dataset(valx, valy, test_aug, batch_size, shuffle=False)
+            self.use_valid = iterator.make_initializer(valid)
         else:
-            self.valid = None
+            self.use_valid = None
 
         if init_size is not None:
-            self.init = self._create(trainx, trainy, train_aug, init_size)
-            self.use_init = self.iterator.make_initializer(self.init)
-
-    def _create(self, x, y, aug, batch_size):
-        ds_x = tf.data.Dataset.from_tensor_slices(x)
-        ds_x = ds_x.map(aug)
-        if y is None:
-            ds = ds_x
-        else:
-            ds_y = tf.data.Dataset.from_tensor_slices(y)
-            ds = tf.data.Dataset.zip((ds_x, ds_y))
-
-        ds = ds.shuffle(len(x))
-        ds = ds.batch(batch_size)
-        return ds
+            init = create_dataset(x_orig, y_orig, train_aug, init_size)
+            self.use_init = iterator.make_initializer(init)
 
 
 class MNISTDataset(Dataset):
-    def __init__(self, batch_size, init_size=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None):
+        self.n_class = 10
         def train_aug(x):
             x = tf.image.resize_image_with_crop_or_pad(x, 36, 36)
             x = tf.random_crop(x, [32, 32, 1])
@@ -88,13 +124,14 @@ class MNISTDataset(Dataset):
             testx,  mnist.test.labels,
             batch_size,
             valx=valx, valy=mnist.validation.labels,
-            train_aug=train_aug, test_aug=test_aug, init_size=init_size
+            train_aug=train_aug, test_aug=test_aug,
+            init_size=init_size, n_labels=n_labels
         )
-        self.n_class = 10
 
 
 class CIFAR10Dataset(Dataset):
-    def __init__(self, batch_size, init_size=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None):
+        self.n_class = 10
         def load(f):
             with open(f, 'rb') as f:
                 stuff = pickle.load(f, encoding="bytes")
@@ -114,8 +151,6 @@ class CIFAR10Dataset(Dataset):
         testx = testx.reshape([-1, 3, 32, 32])
         trainx = np.transpose(trainx, [0, 2, 3, 1])
         testx = np.transpose(testx, [0, 2, 3, 1])
-        #trainx = trainx[:, :, :, ::-1]
-        #testx = testx[:, :, :, ::-1]
         trainy = np.array(trainy, dtype=np.uint8)
         testy = np.array(testy, dtype=np.uint8)
 
@@ -129,13 +164,13 @@ class CIFAR10Dataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug, init_size=init_size
+            train_aug=train_aug, init_size=init_size, n_labels=n_labels
         )
-        self.n_class = 10
 
 
 class SVHNDataset(Dataset):
-    def __init__(self, batch_size, init_size=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None):
+        self.n_class = 10
         train = scipy.io.loadmat("SVHN_data/train_32x32.mat")
         trainx, trainy = train['X'], train['y']
         trainx = trainx.transpose((3, 0, 1, 2))
@@ -152,9 +187,8 @@ class SVHNDataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug, init_size=init_size
+            train_aug=train_aug, init_size=init_size, n_labels=n_labels
         )
-        self.n_class = 10
 
 
 def gs(x):
@@ -176,10 +210,19 @@ def mog_sample(mus, shape, stddev=1.):
 
 
 if __name__ == "__main__":
+    sess = tf.Session()
 
-    dataset = SVHNDataset(128)
+    trainx = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9] * 10)
+    trainy = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9] * 10)
 
-    # sess = tf.Session()
+    valx = np.array([-1] * 100)
+    valy = np.array([-1] * 100)
+
+    testx = np.array([-2] * 100)
+    testy = np.array([-2] * 100)
+
+    dataset = Dataset(trainx, trainy, testx, testy, batch_size=10, valx=valx, valy=valy, init_size=4, n_labels=20)
+
     # mus = tf.random_normal([2, 5, 5, 3])
     # z = tf.random_normal([13, 5, 5, 3])
     # shape = tf.shape(z)
@@ -208,26 +251,37 @@ if __name__ == "__main__":
     # print(iterator, item)
     #
     # 1/0
-
+    #
     # dataset = CIFAR10Dataset(10)
-    # #dataset = SVHNDataset(10)
-    # iterator = dataset.train.make_initializable_iterator()
-    # init = iterator.initializer
-    # x, y = iterator.get_next()
-    # sess = tf.Session()
+
+    x, y = dataset.x, dataset.y
+    x_u = dataset.x_u
+    sess.run(dataset.use_train)
+    _x, _y, _u = sess.run([x, y, x_u])
+    print(_x, _y, _u)
+    sess.run(dataset.use_init)
+    _x, _y = sess.run([x, y])
+    print(_x, _y)
+    sess.run(dataset.use_valid)
+    _x, _y = sess.run([x, y])
+    print(_x, _y)
+    sess.run(dataset.use_test)
+    _x, _y = sess.run([x, y])
+    print(_x, _y)
+    #
     # for i in range(100):
-    #     print(i)
-    #     sess.run(init)
-    #     while True:
-    #         try:
-    #             res = sess.run(x)
-    #             for im in res:
-    #                 cv2.imshow("im", im)
-    #                 cv2.waitKey(0)
-    #             print('batch', res.shape)
-    #         except tf.errors.OutOfRangeError:
-    #             print("reinit")
-    #             break
+    #     _x, _y = sess.run([x, y])
+    #     print(_x, _y)
+    #     # while True:
+    #     #     try:
+    #     #         res = sess.run(x)
+    #     #         for im in res:
+    #     #             cv2.imshow("im", im)
+    #     #             cv2.waitKey(0)
+    #     #         print('batch', res.shape)
+    #     #     except tf.errors.OutOfRangeError:
+    #     #         print("reinit")
+    #     #         break
     #
     #     # for im in res:
     #     #     cv2.imshow("im", im)

@@ -7,6 +7,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_dir", type=str, default="/tmp/train")
     parser.add_argument("--dataset", type=str, default='mnist', help="Problem (mnist/cifar10/svhn)")
+    parser.add_argument("--num_labels", type=int, default=None, help="Number of labeled examples to use")
 
     # Optimization hyperparams:
     parser.add_argument("--epochs", type=int, default=50000, help="Train epoch size")
@@ -30,16 +31,17 @@ if __name__ == "__main__":
     sess = tf.Session()
 
     dataset_fn = {'svhn': utils.SVHNDataset, 'cifar10': utils.CIFAR10Dataset, 'mnist': utils.MNISTDataset}[args.dataset]
-    dataset = dataset_fn(args.batch_size, init_size=args.init_batch_size)
+    dataset = dataset_fn(args.batch_size, init_size=args.init_batch_size, n_labels=args.num_labels)
 
-    x, y = dataset.iterator.get_next()
+    # unpack labeled examples
+    x, y = dataset.x, dataset.y
     y = tf.to_int64(y)
     y_oh = tf.one_hot(y, dataset.n_class)
     xpp = preprocess(x, n_bits_x=args.n_bits_x)
 
     z_init, _ = net(xpp, "net", args.n_levels, args.depth, width=args.width, init=True)
     z, logdet = net(xpp, "net", args.n_levels, args.depth, width=args.width)
-    x_recons, logdet_recons = net(z, "net", args.n_levels, args.depth, width=args.width, backward=True)
+    x_recons, _ = net(z, "net", args.n_levels, args.depth, width=args.width, backward=True)
     # make parameters for mixture centers
     top_z_shape = gs(z[-1])[1:]
     class_mu = tf.get_variable(
@@ -49,7 +51,7 @@ if __name__ == "__main__":
     )
     # sample from N(0, I) for low level features and MOG for top level features
     z_samp = [tf.random_normal(tf.shape(_z)) for _z in z[:-1]] + [utils.mog_sample(class_mu, tf.shape(z[-1]))]
-    x_samp, logdet_samp = net(z_samp, "net", args.n_levels, args.depth, width=args.width, backward=True)
+    x_samp, _ = net(z_samp, "net", args.n_levels, args.depth, width=args.width, backward=True)
 
     # get means for top features for mini batch elements
     mu_z_top = tf.reduce_sum(y_oh[:, :, None, None, None] * class_mu[None, :, :, :, :], axis=1)
@@ -61,7 +63,7 @@ if __name__ == "__main__":
     logpz_given_y = tf.add_n([lp(mu_l, z_l) for mu_l, z_l in zip(mu_z, z)])
     logpx_given_y = logpz_given_y + logdet
     logpxy = logpx_given_y + logpy
-    gen_objective = tf.reduce_mean(logpxy) - np.log(args.n_bins_x) * np.prod(gs(x)[1:])
+    gen_objective_l = tf.reduce_mean(logpxy) - np.log(args.n_bins_x) * np.prod(gs(x)[1:])
     # compute discriminative objective logp(y|x)
     top_z = z[-1]
     logpz_given_y_all = tf.reduce_sum(
@@ -72,6 +74,34 @@ if __name__ == "__main__":
     disc_objective = tf.reduce_mean(logpy_given_z)
     preds = tf.argmax(logpz_given_y_all, axis=1)
     accuracy = tf.reduce_mean(tf.to_float(tf.equal(preds, y)))
+
+    # compute (or fake) generaitve objective for unlabeled data
+    if args.num_labels is None:
+        gen_objective_u = 0.
+        l_weight = 1.
+        u_weight = 0.
+    else:
+        x_u = dataset.x_u
+        xpp_u = preprocess(x_u, n_bits_x=args.n_bits_x)
+        z_u, logdet_u = net(xpp_u, "net", args.n_levels, args.depth, width=args.width)
+        # get logp(z) for intermediate z since they don't depend on y
+        logpz_mid_u = tf.add_n([lp(0., z_u_l) for z_u_l in z_u[:-1]])
+        # get logp(z) for top z by taking logsumexp of each logp(z|y)
+        logpz_given_y_all_u = tf.reduce_sum(
+            utils.normal_logpdf(z_u[-1][:, None, :, :, :], class_mu[None, :, :, :, :], 0.),
+            axis=[2, 3, 4]
+        )
+        logpz_top_u = tf.reduce_logsumexp(logpz_given_y_all_u, axis=1)
+        logpz_u = logpz_mid_u + logpz_top_u + logpy
+        logpx_u = logpz_u + logdet_u
+        gen_objective_u = tf.reduce_mean(logpx_u) - np.log(args.n_bins_x) * np.prod(gs(x)[1:])
+        tf.summary.histogram("gen_objective_u", gen_objective_u)
+        n_train = float(dataset.n_train_l + dataset.n_train_u)
+        l_weight = dataset.n_train_l / n_train
+        u_weight = dataset.n_train_u / n_train
+
+    # total generative objective
+    gen_objective = l_weight * gen_objective_l + u_weight * gen_objective_u
     # total objective
     objective = args.disc_weight * disc_objective + (1. - args.disc_weight) * gen_objective
     loss = -objective
@@ -93,7 +123,7 @@ if __name__ == "__main__":
     tf.summary.scalar("logdet", tf.reduce_mean(logdet))
     tf.summary.scalar("logpz", tf.reduce_mean(logpz_given_y))
     tf.summary.scalar("disc_objective", disc_objective)
-    tf.summary.scalar("gen_objective", gen_objective)
+    tf.summary.scalar("gen_objective_l", gen_objective_l)
     train_summary = tf.summary.merge_all()
     test_summary = tf.summary.merge([loss_summary, acc_summary])
 

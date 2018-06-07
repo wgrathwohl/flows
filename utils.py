@@ -16,6 +16,7 @@ class Dataset(object):
         if num_labels is None:
             self.train = self._create(trainx, trainy, train_aug, batch_size)
         else:
+            PUT ALL THIS IN A DIFFERENT FUNCTION AND JUST HAVE TRAINX_UNLABELED AS AN ARG TO THE CONSTRUCTOR
             data_dict = defaultdict(list)
             for x, y in zip(trainx, trainy):
                 data_dict[y].append(x)

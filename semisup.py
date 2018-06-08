@@ -73,7 +73,8 @@ if __name__ == "__main__":
     logpy_given_z = -tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y, logits=logpz_given_y_all)
     disc_objective = tf.reduce_mean(logpy_given_z)
     preds = tf.argmax(logpz_given_y_all, axis=1)
-    accuracy = tf.reduce_mean(tf.to_float(tf.equal(preds, y)))
+    correct = tf.to_float(tf.equal(preds, y))
+    accuracy = tf.reduce_mean(correct)
 
     # compute (or fake) generaitve objective for unlabeled data
     if args.num_labels is None:
@@ -95,7 +96,7 @@ if __name__ == "__main__":
         logpz_u = logpz_mid_u + logpz_top_u + logpy
         logpx_u = logpz_u + logdet_u
         gen_objective_u = tf.reduce_mean(logpx_u) - np.log(args.n_bins_x) * np.prod(gs(x)[1:])
-        tf.summary.histogram("gen_objective_u", gen_objective_u)
+        tf.summary.scalar("gen_objective_u", gen_objective_u)
         n_train = float(dataset.n_train_l + dataset.n_train_u)
         l_weight = dataset.n_train_l / n_train
         u_weight = dataset.n_train_u / n_train
@@ -125,7 +126,8 @@ if __name__ == "__main__":
     tf.summary.scalar("disc_objective", disc_objective)
     tf.summary.scalar("gen_objective_l", gen_objective_l)
     train_summary = tf.summary.merge_all()
-    test_summary = tf.summary.merge([loss_summary, acc_summary])
+    #test_summary = tf.summary.merge([loss_summary, acc_summary])
+    test_summary = acc_summary
 
     # initialize variables
     sess.run(tf.global_variables_initializer())
@@ -161,19 +163,16 @@ if __name__ == "__main__":
         # run test set every 10 epochs
         if epoch % args.epochs_valid == 0:
             sess.run(dataset.use_test)
-            test_loss = []
             test_acc = []
             while True:
                 try:
-                    _l, _a = sess.run([loss, accuracy])
-                    test_loss.append(_l)
-                    test_acc.append(_a)
+                    _c = sess.run(correct)
+                    test_acc.extend(_c)
                 except tf.errors.OutOfRangeError:
                     # at epoch end
-                    test_loss = np.mean(test_loss)
                     test_acc = np.mean(test_acc)
-                    print("Test loss: {}, Test acc: {}".format(test_loss, test_acc))
-                    sstr = sess.run(test_summary, feed_dict={loss: test_loss, accuracy: test_acc})
+                    print("Test acc: {}".format(test_loss, test_acc))
+                    sstr = sess.run(test_summary, feed_dict={accuracy: test_acc})
                     test_writer.add_summary(sstr, cur_iter)
                     break
 

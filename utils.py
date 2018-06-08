@@ -68,22 +68,20 @@ class Dataset(object):
             label_frac = float(len(trainx)) / n_train_all
             bs_l = max(int(label_frac * batch_size), 1)
             bs_u = batch_size - bs_l
-            train_u = create_dataset(trainx_unlabeled, None, train_aug, bs_u)
+            train_u = create_dataset(trainx_unlabeled, None, train_aug, bs_u, repeat=True)
             iterator_u = tf.data.Iterator.from_structure(train_u.output_types, train_u.output_shapes)
             self.x_u = iterator_u.get_next()
             use_train_u = iterator_u.make_initializer(train_u)
             self.n_train_u = len(trainx_unlabeled)
-            # if we are using unlabeled data, we use the unlabeled set to tell us when an epoch has ended
+            # if we are using unlabeled data, we use the labeled set to tell us when an epoch has ended
             # since the labeled dataset is much smaller, we want at least one labled example in a batch
             # so we have to plan for the train dataset to loop through at least once every time for every epoch
-            train_repeat = True
         else:
-            train_repeat = False
             bs_l = batch_size
             self.x_u = None
 
         self.n_train_l = len(trainx)
-        train = create_dataset(trainx, trainy, train_aug, bs_l, repeat=train_repeat)
+        train = create_dataset(trainx, trainy, train_aug, bs_l)
         test = create_dataset(testx, testy, test_aug, batch_size, shuffle=False)
         iterator = tf.data.Iterator.from_structure(train.output_types, train.output_shapes)
         self.x, self.y = iterator.get_next()

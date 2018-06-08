@@ -2,11 +2,31 @@ from glow import *
 import argparse
 import os
 import time
+import json
+import shutil
+
+
+def create_experiment_directory(args):
+    # write params
+    with open(os.path.join(args.train_dir, "params.txt"), 'w') as f:
+        f.write(json.dumps(args.__dict__))
+    # copy code
+    code_dest_dir = os.path.join(args.train_dir, "code")
+    os.mkdir(code_dest_dir)
+    code_dir = os.path.dirname(__file__)
+    code_dir = '.' if code_dir == '' else code_dir
+    python_files = [os.path.join(code_dir, fn) for fn in os.listdir(code_dir) if fn.endswith(".py")]
+    for pyf in python_files:
+        print(pyf, code_dest_dir)
+        shutil.copy2(pyf, code_dest_dir)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_dir", type=str, default="/tmp/train")
     parser.add_argument("--dataset", type=str, default='mnist', help="Problem (mnist/cifar10/svhn)")
+    parser.add_argument("--num_valid", type=int, default=None,
+                        help="The number of examples to place into the validaiton set (only for svhn and cifar10)")
     parser.add_argument("--num_labels", type=int, default=None, help="Number of labeled examples to use")
 
     # Optimization hyperparams:
@@ -28,10 +48,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.n_bins_x = 2.**args.n_bits_x
     assert 0. <= args.disc_weight <= 1., "Disc weigt must be in [0., 1.]"
+    # set up logging
+    assert not os.path.exists(args.train_dir), "This directory already exists..."
+    train_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "train"))
+    test_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "test"))
+    valid_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "valid"))
+    # setup experiment directory, copy current version of the code, save parameters
+    create_experiment_directory(args)
+
+    # create session
     sess = tf.Session()
 
     dataset_fn = {'svhn': utils.SVHNDataset, 'cifar10': utils.CIFAR10Dataset, 'mnist': utils.MNISTDataset}[args.dataset]
-    dataset = dataset_fn(args.batch_size, init_size=args.init_batch_size, n_labels=args.num_labels)
+    dataset = dataset_fn(
+        args.batch_size, init_size=args.init_batch_size, n_labels=args.num_labels, n_valid=args.num_valid
+    )
 
     # unpack labeled examples
     x, y = dataset.x, dataset.y
@@ -41,6 +72,7 @@ if __name__ == "__main__":
 
     z_init, _ = net(xpp, "net", args.n_levels, args.depth, width=args.width, init=True)
     z, logdet = net(xpp, "net", args.n_levels, args.depth, width=args.width)
+    # i should remove this maybe to save a little time?
     x_recons, _ = net(z, "net", args.n_levels, args.depth, width=args.width, backward=True)
     # make parameters for mixture centers
     top_z_shape = gs(z[-1])[1:]
@@ -134,9 +166,23 @@ if __name__ == "__main__":
     # initialize act-norm parameters
     sess.run(dataset.use_init)
     sess.run(z_init)
-    # set up logging
-    train_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "train"))
-    test_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "test"))
+
+    # evaluation code block
+    def evaluate(init_op, writer, name):
+        sess.run(init_op)
+        test_acc = []
+        while True:
+            try:
+                _c = sess.run(correct)
+                test_acc.extend(_c)
+            except tf.errors.OutOfRangeError:
+                # at epoch end
+                test_acc = np.mean(test_acc)
+                print("{} acc: {}".format(name, test_acc))
+                sstr = sess.run(test_summary, feed_dict={accuracy: test_acc})
+                writer.add_summary(sstr, cur_iter)
+                break
+
 
     # training loop
     cur_iter = 0
@@ -160,19 +206,10 @@ if __name__ == "__main__":
                 print("Completed epoch {} in {}".format(epoch, time.time() - t_start))
                 break
 
-        # run test set every 10 epochs
+        # get accuracy on test set
         if epoch % args.epochs_valid == 0:
-            sess.run(dataset.use_test)
-            test_acc = []
-            while True:
-                try:
-                    _c = sess.run(correct)
-                    test_acc.extend(_c)
-                except tf.errors.OutOfRangeError:
-                    # at epoch end
-                    test_acc = np.mean(test_acc)
-                    print("Test acc: {}".format(test_acc))
-                    sstr = sess.run(test_summary, feed_dict={accuracy: test_acc})
-                    test_writer.add_summary(sstr, cur_iter)
-                    break
+            evaluate(dataset.use_test, test_writer, "Test")
+            # if we have a validation set, get validation accuracy
+            if dataset.use_valid is not None:
+                evaluate(dataset.use_valid, valid_writer, "Valid")
 

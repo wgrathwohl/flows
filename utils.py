@@ -16,6 +16,7 @@ def split_dataset(xs, ys, n_labels, seed=1234):
     xs_u = []
     xs_l = []
     ys_l = []
+    ys_u = []
     n_class = len(data_dict.keys())
     assert n_labels % n_class == 0, "num class must divide num labels"
     n_per_class = n_labels // n_class
@@ -27,10 +28,12 @@ def split_dataset(xs, ys, n_labels, seed=1234):
         xs_u.extend(cur_xs_u)
         xs_l.extend(cur_xs_l)
         ys_l.extend([y] * n_per_class)
+        ys_u.extend([y] * len(cur_xs_u))
     xs_l = np.array(xs_l, dtype=xs.dtype)
     xs_u = np.array(xs_u, dtype=xs.dtype)
     ys_l = np.array(ys_l, dtype=ys.dtype)
-    return xs_u, xs_l, ys_l
+    ys_u = np.array(ys_u, dtype=ys.dtype)
+    return xs_u, ys_u, xs_l, ys_l
 
 
 def create_dataset(x, y, aug, batch_size, shuffle=True, repeat=False):
@@ -56,14 +59,21 @@ class Dataset(object):
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
                  train_aug=lambda x: x, test_aug=lambda x: x,
-                 init_size=None, n_labels=None):
+                 init_size=None, n_labels=None, n_valid=None):
+
+        # create validation set if requested
+        if n_valid is not None:
+            # ensure that we are not given a validation set if we are asked to make one
+            assert valx is None and valy is None, "If you want me to make a validation set, then don't give me one"
+            trainx, trainy, valx, valy = split_dataset(trainx, trainy, n_valid)
+
         # store original trainx so we can use it go generate a large init batch
         # since no labels are used in initialization, this is ok
         x_orig, y_orig = trainx, trainy
         # if using unlabeled data sample labeled batches of size bs_l and unlabeled batches of size bs_u
         # such that bs_u + bs_l = batch_size
         if n_labels is not None:
-            trainx_unlabeled, trainx, trainy = split_dataset(trainx, trainy, n_labels)
+            trainx_unlabeled, _, trainx, trainy = split_dataset(trainx, trainy, n_labels)
             n_train_all = len(trainx) + len(trainx_unlabeled)
             label_frac = float(len(trainx)) / n_train_all
             bs_l = max(int(label_frac * batch_size), 1)
@@ -103,7 +113,8 @@ class Dataset(object):
 
 
 class MNISTDataset(Dataset):
-    def __init__(self, batch_size, init_size=None, n_labels=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
+        assert n_valid is None
         self.n_class = 10
         def train_aug(x):
             x = tf.image.resize_image_with_crop_or_pad(x, 36, 36)
@@ -128,7 +139,7 @@ class MNISTDataset(Dataset):
 
 
 class CIFAR10Dataset(Dataset):
-    def __init__(self, batch_size, init_size=None, n_labels=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
         self.n_class = 10
         def load(f):
             with open(f, 'rb') as f:
@@ -162,12 +173,12 @@ class CIFAR10Dataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug, init_size=init_size, n_labels=n_labels
+            train_aug=train_aug, init_size=init_size, n_labels=n_labels, n_valid=n_valid
         )
 
 
 class SVHNDataset(Dataset):
-    def __init__(self, batch_size, init_size=None, n_labels=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
         self.n_class = 10
         train = scipy.io.loadmat("SVHN_data/train_32x32.mat")
         trainx, trainy = train['X'], train['y']
@@ -185,7 +196,7 @@ class SVHNDataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug, init_size=init_size, n_labels=n_labels
+            train_aug=train_aug, init_size=init_size, n_labels=n_labels, n_valid=n_valid
         )
 
 

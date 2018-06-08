@@ -21,6 +21,14 @@ def create_experiment_directory(args):
         shutil.copy2(pyf, code_dest_dir)
 
 
+def get_lr(epoch, args):
+    epoch_lr = (args.lr * (epoch + 1) / args.epochs_warmup) if epoch < args.epochs_warmup + 1 else args.lr
+    # get decayed lr
+    lr_scale = args.decay_factor ** (epoch // args.epochs_decay)
+    epoch_lr *= lr_scale
+    return epoch_lr
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_dir", type=str, default="/tmp/train")
@@ -28,15 +36,19 @@ if __name__ == "__main__":
     parser.add_argument("--num_valid", type=int, default=None,
                         help="The number of examples to place into the validaiton set (only for svhn and cifar10)")
     parser.add_argument("--num_labels", type=int, default=None, help="Number of labeled examples to use")
+    parser.add_argument("--load_path", type=str, default=None, help="Path for load saved checkpoint from")
 
     # Optimization hyperparams:
-    parser.add_argument("--epochs", type=int, default=50000, help="Train epoch size")
+    parser.add_argument("--epochs", type=int, default=1000, help="Train epoch size")
     parser.add_argument("--batch_size", type=int, default=64, help="batch size")
     parser.add_argument("--init_batch_size", type=int, default=1024, help="batch size for init")
     parser.add_argument("--lr", type=float, default=0.001, help="Base learning rate")
     parser.add_argument("--lr_scalemode", type=int, default=0, help="Type of learning rate scaling. 0=none, 1=linear, 2=sqrt.")
     parser.add_argument("--epochs_warmup", type=int, default=10, help="Warmup epochs")
-    parser.add_argument("--epochs_valid", type=int, default=10, help="Epochs between valid")
+    parser.add_argument("--epochs_valid", type=int, default=1, help="Epochs between valid")
+    parser.add_argument("--epochs_backup", type=int, default=10, help="Epochs between backup saving")
+    parser.add_argument("--epochs_decay", type=int, default=250, help="Epochs between lr decay")
+    parser.add_argument("--decay_factor", type=float, default=.1, help="Multiplier on learning rate")
 
     # Model hyperparams:
     parser.add_argument("--width", type=int, default=64, help="Width of hidden layers")
@@ -53,6 +65,9 @@ if __name__ == "__main__":
     train_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "train"))
     test_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "test"))
     valid_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "valid"))
+    # savers for the best validation models and regularly
+    best_saver = tf.train.Saver(max_to_keep=5)
+    backup_saver = tf.train.Saver(max_to_keep=5)
     # setup experiment directory, copy current version of the code, save parameters
     create_experiment_directory(args)
 
@@ -158,7 +173,6 @@ if __name__ == "__main__":
     tf.summary.scalar("disc_objective", disc_objective)
     tf.summary.scalar("gen_objective_l", gen_objective_l)
     train_summary = tf.summary.merge_all()
-    #test_summary = tf.summary.merge([loss_summary, acc_summary])
     test_summary = acc_summary
 
     # initialize variables
@@ -181,25 +195,34 @@ if __name__ == "__main__":
                 print("{} acc: {}".format(name, test_acc))
                 sstr = sess.run(test_summary, feed_dict={accuracy: test_acc})
                 writer.add_summary(sstr, cur_iter)
-                break
+                return test_acc
+
+    # restore model if asked
+    if args.load_path is not None:
+        backup_saver.restore(sess, args.load_path)
+        start_epoch = int(args.load_path.split('-')[-1])
+    else:
+        start_epoch = 0
 
 
     # training loop
     cur_iter = 0
-    for epoch in range(args.epochs):
+    best_valid = 0.0
+    for epoch in range(start_epoch, args.epochs):
         sess.run(dataset.use_train)
         t_start = time.time()
+        # get lr for this epoch
+        epoch_lr = get_lr(epoch, args)
         while True:
             try:
-                cur_lr = (args.lr * (epoch + 1) / args.epochs_warmup) if epoch < args.epochs_warmup + 1 else args.lr
-                if cur_iter % 100 == 0:
+                if cur_iter % 1000 == 0:
                     _re, _l, _a, _, sstr = sess.run([recons_error, loss, accuracy, opt, train_summary],
-                                                    feed_dict={lr: cur_lr})
+                                                    feed_dict={lr: epoch_lr})
                     train_writer.add_summary(sstr, cur_iter)
                     print(cur_iter, _l, _a, _re)
 
                 else:
-                    _ = sess.run(opt, feed_dict={lr: cur_lr})
+                    _ = sess.run(opt, feed_dict={lr: epoch_lr})
 
                 cur_iter += 1
             except tf.errors.OutOfRangeError:
@@ -211,5 +234,13 @@ if __name__ == "__main__":
             evaluate(dataset.use_test, test_writer, "Test")
             # if we have a validation set, get validation accuracy
             if dataset.use_valid is not None:
-                evaluate(dataset.use_valid, valid_writer, "Valid")
+                valid_acc = evaluate(dataset.use_valid, valid_writer, "Valid")
+                if valid_acc > best_valid:
+                    print("Best performing model with accuracy: {}".format(valid_acc))
+                    best_valid = valid_acc
+                    best_saver.save(sess, "{}/best-model.ckpt", global_step=epoch)
+
+        # backup model
+        if epoch % args.epochs_backup == 0:
+            backup_saver.save(sess, "{}/model.ckpt".format(args.train_dir), global_step=epoch)
 

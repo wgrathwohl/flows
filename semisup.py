@@ -171,7 +171,7 @@ if __name__ == "__main__":
                 except tf.errors.OutOfRangeError:
                     # at epoch end
                     test_acc = np.mean(test_acc)
-                    print("Test acc: {}".format(test_loss, test_acc))
+                    print("Test acc: {}".format(test_acc))
                     sstr = sess.run(test_summary, feed_dict={accuracy: test_acc})
                     test_writer.add_summary(sstr, cur_iter)
                     break

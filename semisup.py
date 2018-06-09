@@ -19,6 +19,8 @@ def create_experiment_directory(args):
     for pyf in python_files:
         print(pyf, code_dest_dir)
         shutil.copy2(pyf, code_dest_dir)
+    os.mkdir(os.path.join(args.train_dir, "best"))
+    os.mkdir(os.path.join(args.train_dir, "backup"))
 
 
 def get_lr(epoch, args):
@@ -37,6 +39,7 @@ if __name__ == "__main__":
                         help="The number of examples to place into the validaiton set (only for svhn and cifar10)")
     parser.add_argument("--num_labels", type=int, default=None, help="Number of labeled examples to use")
     parser.add_argument("--load_path", type=str, default=None, help="Path for load saved checkpoint from")
+    parser.add_argument("--log_iters", type=int, default=1000, help="iters per each print and summary")
 
     # Optimization hyperparams:
     parser.add_argument("--epochs", type=int, default=1000, help="Train epoch size")
@@ -65,9 +68,6 @@ if __name__ == "__main__":
     train_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "train"))
     test_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "test"))
     valid_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "valid"))
-    # savers for the best validation models and regularly
-    best_saver = tf.train.Saver(max_to_keep=5)
-    backup_saver = tf.train.Saver(max_to_keep=5)
     # setup experiment directory, copy current version of the code, save parameters
     create_experiment_directory(args)
 
@@ -175,6 +175,10 @@ if __name__ == "__main__":
     train_summary = tf.summary.merge_all()
     test_summary = acc_summary
 
+    # savers for the best validation models and regularly
+    best_saver = tf.train.Saver(max_to_keep=5)
+    backup_saver = tf.train.Saver(max_to_keep=5)
+
     # initialize variables
     sess.run(tf.global_variables_initializer())
     # initialize act-norm parameters
@@ -215,7 +219,7 @@ if __name__ == "__main__":
         epoch_lr = get_lr(epoch, args)
         while True:
             try:
-                if cur_iter % 1000 == 0:
+                if cur_iter % args.log_iters == 0:
                     _re, _l, _a, _, sstr = sess.run([recons_error, loss, accuracy, opt, train_summary],
                                                     feed_dict={lr: epoch_lr})
                     train_writer.add_summary(sstr, cur_iter)
@@ -238,9 +242,9 @@ if __name__ == "__main__":
                 if valid_acc > best_valid:
                     print("Best performing model with accuracy: {}".format(valid_acc))
                     best_valid = valid_acc
-                    best_saver.save(sess, "{}/best-model.ckpt", global_step=epoch)
+                    best_saver.save(sess, "{}/best/model.ckpt".format(args.train_dir), global_step=epoch)
 
         # backup model
         if epoch % args.epochs_backup == 0:
-            backup_saver.save(sess, "{}/model.ckpt".format(args.train_dir), global_step=epoch)
+            backup_saver.save(sess, "{}/backup/model.ckpt".format(args.train_dir), global_step=epoch)
 

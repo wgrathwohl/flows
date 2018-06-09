@@ -181,10 +181,10 @@ class SVHNDataset(Dataset):
     def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
         self.n_class = 10
         train = scipy.io.loadmat("SVHN_data/train_32x32.mat")
-        trainx, trainy = train['X'], train['y']
+        trainx, trainy = train['X'], train['y'][:, 0] - 1
         trainx = trainx.transpose((3, 0, 1, 2))
         test = scipy.io.loadmat("SVHN_data/train_32x32.mat")
-        testx, testy = test['X'], test['y']
+        testx, testy = test['X'], test['y'][:, 0] - 1
         testx = testx.transpose((3, 0, 1, 2))
 
         def train_aug(x):

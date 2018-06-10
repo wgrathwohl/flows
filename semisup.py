@@ -26,9 +26,12 @@ def create_experiment_directory(args):
 def get_lr(epoch, args):
     epoch_lr = (args.lr * (epoch + 1) / args.epochs_warmup) if epoch < args.epochs_warmup + 1 else args.lr
     # get decayed lr
-    lr_scale = args.decay_factor ** (epoch // args.epochs_decay)
-    epoch_lr *= lr_scale
-    return epoch_lr
+    if args.lr_scalemode == 0:
+        return epoch_lr
+    else:
+        lr_scale = args.decay_factor ** (epoch // args.epochs_decay)
+        epoch_lr *= lr_scale
+        return epoch_lr
 
 
 if __name__ == "__main__":
@@ -46,7 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64, help="batch size")
     parser.add_argument("--init_batch_size", type=int, default=1024, help="batch size for init")
     parser.add_argument("--lr", type=float, default=0.001, help="Base learning rate")
-    parser.add_argument("--lr_scalemode", type=int, default=0, help="Type of learning rate scaling. 0=none, 1=linear, 2=sqrt.")
+    parser.add_argument("--lr_scalemode", type=int, default=0, help="Type of learning rate scaling. 0=none, 1=step.")
     parser.add_argument("--epochs_warmup", type=int, default=10, help="Warmup epochs")
     parser.add_argument("--epochs_valid", type=int, default=1, help="Epochs between valid")
     parser.add_argument("--epochs_backup", type=int, default=10, help="Epochs between backup saving")

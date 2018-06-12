@@ -45,7 +45,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_iters", type=int, default=1000, help="iters per each print and summary")
 
     # Optimization hyperparams:
-    parser.add_argument("--epochs", type=int, default=1000, help="Train epoch size")
+    parser.add_argument("--epochs", type=int, default=100000, help="Train epoch size")
     parser.add_argument("--batch_size", type=int, default=64, help="batch size")
     parser.add_argument("--init_batch_size", type=int, default=1024, help="batch size for init")
     parser.add_argument("--lr", type=float, default=0.001, help="Base learning rate")
@@ -79,17 +79,17 @@ if __name__ == "__main__":
 
     dataset_fn = {'svhn': utils.SVHNDataset, 'cifar10': utils.CIFAR10Dataset, 'mnist': utils.MNISTDataset}[args.dataset]
     dataset = dataset_fn(
-        args.batch_size, init_size=args.init_batch_size, n_labels=args.num_labels, n_valid=args.num_valid
+        args.batch_size,
+        init_size=args.init_batch_size, n_labels=args.num_labels, n_valid=args.num_valid, n_bits_x=args.n_bits_x
     )
 
     # unpack labeled examples
     x, y = dataset.x, dataset.y
     y = tf.to_int64(y)
     y_oh = tf.one_hot(y, dataset.n_class)
-    xpp = preprocess(x, n_bits_x=args.n_bits_x)
 
-    z_init, _ = net(xpp, "net", args.n_levels, args.depth, width=args.width, init=True)
-    z, logdet = net(xpp, "net", args.n_levels, args.depth, width=args.width)
+    z_init, _ = net(x, "net", args.n_levels, args.depth, width=args.width, init=True)
+    z, logdet = net(x, "net", args.n_levels, args.depth, width=args.width)
     # i should remove this maybe to save a little time?
     x_recons, _ = net(z, "net", args.n_levels, args.depth, width=args.width, backward=True)
     # make parameters for mixture centers
@@ -133,8 +133,7 @@ if __name__ == "__main__":
         u_weight = 0.
     else:
         x_u = dataset.x_u
-        xpp_u = preprocess(x_u, n_bits_x=args.n_bits_x)
-        z_u, logdet_u = net(xpp_u, "net", args.n_levels, args.depth, width=args.width)
+        z_u, logdet_u = net(x_u, "net", args.n_levels, args.depth, width=args.width)
         # get logp(z) for intermediate z since they don't depend on y
         logpz_mid_u = tf.add_n([lp(0., z_u_l) for z_u_l in z_u[:-1]])
         # get logp(z) for top z by taking logsumexp of each logp(z|y)
@@ -161,9 +160,9 @@ if __name__ == "__main__":
     opt = optim.minimize(loss)
 
     # summaries and visualizations
-    x_recons = postprocess(x_recons, n_bits_x=args.n_bits_x)
-    x_samp = postprocess(x_samp, n_bits_x=args.n_bits_x)
-    recons_error = tf.reduce_mean(tf.square(tf.to_float(postprocess(xpp, n_bits_x=args.n_bits_x) - x_recons)))
+    x_recons = utils.postprocess(x_recons, n_bits_x=args.n_bits_x)
+    x_samp = utils.postprocess(x_samp, n_bits_x=args.n_bits_x)
+    recons_error = tf.reduce_mean(tf.square(tf.to_float(utils.postprocess(x, n_bits_x=args.n_bits_x) - x_recons)))
     tf.summary.image("x_sample", x_samp)
     tf.summary.image("x_recons", x_recons)
     tf.summary.image("x", x)

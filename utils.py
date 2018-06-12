@@ -8,6 +8,24 @@ import pickle
 from collections import defaultdict
 
 
+def preprocess(x, n_bits_x=None, rand=True):
+    x = tf.cast(x, 'float32')
+    if n_bits_x < 8:
+        x = tf.floor(x / 2 ** (8 - n_bits_x))
+    n_bins = 2. ** n_bits_x
+    # add [0, 1] random noise
+    if rand:
+        x = x + tf.random_uniform(tf.shape(x), 0., 1.)
+    x = x / n_bins - .5
+    return x
+
+
+def postprocess(x, n_bits_x=None):
+    n_bins = 2. ** n_bits_x
+    x = tf.floor((x + .5) * n_bins) * (2 ** (8 - n_bits_x))
+    return tf.cast(tf.clip_by_value(x, 0, 255), 'uint8')
+
+
 def split_dataset(xs, ys, n_labels, seed=1234):
     data_dict = defaultdict(list)
     for x, y in zip(xs, ys):
@@ -36,9 +54,11 @@ def split_dataset(xs, ys, n_labels, seed=1234):
     return xs_u, ys_u, xs_l, ys_l
 
 
-def create_dataset(x, y, aug, batch_size, shuffle=True, repeat=False):
+def create_dataset(x, y, batch_size, shuffle=True, repeat=False, ind_aug=None, batch_aug=None):
     ds_x = tf.data.Dataset.from_tensor_slices(x)
-    ds_x = ds_x.map(aug)
+    if ind_aug is not None:
+        ds_x = ds_x.map(ind_aug)
+
     if y is None:
         ds = ds_x
     else:
@@ -52,14 +72,25 @@ def create_dataset(x, y, aug, batch_size, shuffle=True, repeat=False):
         ds = ds.repeat()
 
     ds = ds.batch(batch_size)
+
+    if batch_aug is not None:
+        ds = ds.map(batch_aug)
+
     return ds
 
 
 class Dataset(object):
+    def batch_aug_train(self, x, y):
+        return preprocess(x, self.n_bits_x, True), y
+
+    def batch_aug_test(self, x, y):
+        return preprocess(x, self.n_bits_x, False), y
+
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
                  train_aug=lambda x: x, test_aug=lambda x: x,
-                 init_size=None, n_labels=None, n_valid=None):
+                 init_size=None, n_labels=None, n_valid=None, n_bits_x=None):
+        self.n_bits_x = n_bits_x
 
         # create validation set if requested
         if n_valid is not None:
@@ -78,7 +109,8 @@ class Dataset(object):
             label_frac = float(len(trainx)) / n_train_all
             bs_l = max(int(label_frac * batch_size), 1)
             bs_u = batch_size - bs_l
-            train_u = create_dataset(trainx_unlabeled, None, train_aug, bs_u, repeat=True)
+            train_u = create_dataset(trainx_unlabeled, None, bs_u,
+                                     repeat=True, ind_aug=train_aug, batch_aug=self.batch_aug_train)
             iterator_u = tf.data.Iterator.from_structure(train_u.output_types, train_u.output_shapes)
             self.x_u = iterator_u.get_next()
             use_train_u = iterator_u.make_initializer(train_u)
@@ -91,8 +123,8 @@ class Dataset(object):
             self.x_u = None
 
         self.n_train_l = len(trainx)
-        train = create_dataset(trainx, trainy, train_aug, bs_l)
-        test = create_dataset(testx, testy, test_aug, batch_size, shuffle=False)
+        train = create_dataset(trainx, trainy, bs_l, ind_aug=train_aug, batch_aug=self.batch_aug_train)
+        test = create_dataset(testx, testy, batch_size, shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug_test)
         iterator = tf.data.Iterator.from_structure(train.output_types, train.output_shapes)
         self.x, self.y = iterator.get_next()
         self.use_train = iterator.make_initializer(train)
@@ -102,18 +134,19 @@ class Dataset(object):
 
         self.use_test = iterator.make_initializer(test)
         if valx is not None:
-            valid = create_dataset(valx, valy, test_aug, batch_size, shuffle=False)
+            valid = create_dataset(valx, valy, batch_size,
+                                   shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug_test)
             self.use_valid = iterator.make_initializer(valid)
         else:
             self.use_valid = None
 
         if init_size is not None:
-            init = create_dataset(x_orig, y_orig, train_aug, init_size)
+            init = create_dataset(x_orig, y_orig, init_size, ind_aug=train_aug, batch_aug=self.batch_aug_train)
             self.use_init = iterator.make_initializer(init)
 
 
 class MNISTDataset(Dataset):
-    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None, n_bits_x=None):
         assert n_valid is None
         self.n_class = 10
         def train_aug(x):
@@ -134,12 +167,12 @@ class MNISTDataset(Dataset):
             batch_size,
             valx=valx, valy=mnist.validation.labels,
             train_aug=train_aug, test_aug=test_aug,
-            init_size=init_size, n_labels=n_labels
+            init_size=init_size, n_labels=n_labels, n_bits_x=n_bits_x
         )
 
 
 class CIFAR10Dataset(Dataset):
-    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None, n_bits_x=None):
         self.n_class = 10
         def load(f):
             with open(f, 'rb') as f:
@@ -173,12 +206,12 @@ class CIFAR10Dataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug, init_size=init_size, n_labels=n_labels, n_valid=n_valid
+            train_aug=train_aug, init_size=init_size, n_labels=n_labels, n_valid=n_valid, n_bits_x=n_bits_x
         )
 
 
 class SVHNDataset(Dataset):
-    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None):
+    def __init__(self, batch_size, init_size=None, n_labels=None, n_valid=None, n_bits_x=None):
         self.n_class = 10
         train = scipy.io.loadmat("SVHN_data/train_32x32.mat")
         trainx, trainy = train['X'], train['y'][:, 0] - 1
@@ -196,7 +229,7 @@ class SVHNDataset(Dataset):
             trainx, trainy,
             testx, testy,
             batch_size,
-            train_aug=train_aug, init_size=init_size, n_labels=n_labels, n_valid=n_valid
+            train_aug=train_aug, init_size=init_size, n_labels=n_labels, n_valid=n_valid, n_bits_x=n_bits_x
         )
 
 

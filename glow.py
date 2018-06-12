@@ -213,23 +213,6 @@ def net(in_feats, name, num_blocks, flow_steps, init=False, backward=False, widt
             return zs, logdet
 
 
-def preprocess(x, n_bits_x=5):
-    x = tf.cast(x, 'float32')
-    if n_bits_x < 8:
-        x = tf.floor(x / 2 ** (8 - n_bits_x))
-    n_bins = 2. ** n_bits_x
-    # add [0, 1] random noise
-    x = x + tf.random_uniform(tf.shape(x), 0., 1.)
-    x = x / n_bins - .5
-    return x
-
-
-def postprocess(x, n_bits_x=5):
-    n_bins = 2. ** n_bits_x
-    x = tf.floor((x + .5) * n_bins) * (2 ** (8 - n_bits_x))
-    return tf.cast(tf.clip_by_value(x, 0, 255), 'uint8')
-
-
 def logpx(zs, logdet):
     logpz = tf.add_n([tf.reduce_sum(utils.normal_logpdf(z, 0., 0.), axis=[1, 2, 3]) for z in zs])
     ave_logpz = tf.reduce_mean(logpz)
@@ -259,7 +242,7 @@ if __name__ == "__main__":
     test_init_op = iterator.make_initializer(dataset.test)
 
     x = iterator.get_next()[0]
-    xpp = preprocess(x, n_bits_x=n_bits_x)
+    xpp = utils.preprocess(x, n_bits_x=n_bits_x)
     
     sess = tf.Session()
 
@@ -273,9 +256,9 @@ if __name__ == "__main__":
         tf.summary.histogram("z{}".format(i), _z)
 
     # visualization for debugging
-    x_recons = postprocess(x_recons, n_bits_x=n_bits_x)
-    x_samp = postprocess(x_samp, n_bits_x=n_bits_x)
-    recons_error = tf.reduce_mean(tf.square(tf.to_float(postprocess(xpp, n_bits_x=n_bits_x) - x_recons)))
+    x_recons = utils.postprocess(x_recons, n_bits_x=n_bits_x)
+    x_samp = utils.postprocess(x_samp, n_bits_x=n_bits_x)
+    recons_error = tf.reduce_mean(tf.square(tf.to_float(utils.postprocess(xpp, n_bits_x=n_bits_x) - x_recons)))
     tf.summary.image("x_sample", x_samp)
     tf.summary.image("x_recons", x_recons)
     tf.summary.image("x", x)

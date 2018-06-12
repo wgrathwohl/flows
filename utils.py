@@ -83,6 +83,9 @@ class Dataset(object):
     def batch_aug_train(self, x, y):
         return preprocess(x, self.n_bits_x, True), y
 
+    def batch_aug_train_unsup(self, x):
+        return preprocess(x, self.n_bits_x, True)
+
     def batch_aug_test(self, x, y):
         return preprocess(x, self.n_bits_x, False), y
 
@@ -110,7 +113,7 @@ class Dataset(object):
             bs_l = max(int(label_frac * batch_size), 1)
             bs_u = batch_size - bs_l
             train_u = create_dataset(trainx_unlabeled, None, bs_u,
-                                     repeat=True, ind_aug=train_aug, batch_aug=self.batch_aug_train)
+                                     repeat=True, ind_aug=train_aug, batch_aug=self.batch_aug_train_unsup)
             iterator_u = tf.data.Iterator.from_structure(train_u.output_types, train_u.output_shapes)
             self.x_u = iterator_u.get_next()
             use_train_u = iterator_u.make_initializer(train_u)

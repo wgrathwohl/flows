@@ -101,6 +101,7 @@ class Dataset(object):
             assert valx is None and valy is None, "If you want me to make a validation set, then don't give me one"
             trainx, trainy, valx, valy = split_dataset(trainx, trainy, n_valid)
 
+
         # store original trainx so we can use it go generate a large init batch
         # since no labels are used in initialization, this is ok
         x_orig, y_orig = trainx, trainy
@@ -108,25 +109,25 @@ class Dataset(object):
         # such that bs_u + bs_l = batch_size
         if n_labels is not None:
             trainx_unlabeled, _, trainx, trainy = split_dataset(trainx, trainy, n_labels)
-            n_train_all = len(trainx) + len(trainx_unlabeled)
-            label_frac = float(len(trainx)) / n_train_all
-            bs_l = max(int(label_frac * batch_size), 1)
-            bs_u = batch_size - bs_l
-            train_u = create_dataset(trainx_unlabeled, None, bs_u,
-                                     repeat=True, ind_aug=train_aug, batch_aug=self.batch_aug_train_unsup)
+            train_u = create_dataset(trainx_unlabeled, None, batch_size,
+                                     ind_aug=train_aug, batch_aug=self.batch_aug_train_unsup)
             iterator_u = tf.data.Iterator.from_structure(train_u.output_types, train_u.output_shapes)
             self.x_u = iterator_u.get_next()
             use_train_u = iterator_u.make_initializer(train_u)
             self.n_train_u = len(trainx_unlabeled)
-            # if we are using unlabeled data, we use the labeled set to tell us when an epoch has ended
-            # since the labeled dataset is much smaller, we want at least one labled example in a batch
-            # so we have to plan for the train dataset to loop through at least once every time for every epoch
+            # if we are using unlabeled data, we use the unlabeled set to tell us when an epoch has ended
+            # since the labeled dataset is much smaller, loop through the training set indefinitely and
+            # we use the unlabeled set to tell us when an epoch has ended
+            bs_l = min(len(trainx), batch_size)
+            train_repeat = True
         else:
+            train_repeat = False
             bs_l = batch_size
             self.x_u = None
 
         self.n_train_l = len(trainx)
-        train = create_dataset(trainx, trainy, bs_l, ind_aug=train_aug, batch_aug=self.batch_aug_train)
+        train = create_dataset(trainx, trainy, bs_l,
+                               repeat=train_repeat, ind_aug=train_aug, batch_aug=self.batch_aug_train)
         test = create_dataset(testx, testy, batch_size, shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug_test)
         iterator = tf.data.Iterator.from_structure(train.output_types, train.output_shapes)
         self.x, self.y = iterator.get_next()
@@ -257,16 +258,11 @@ def mog_sample(mus, shape, stddev=1.):
 if __name__ == "__main__":
     sess = tf.Session()
 
-    trainx = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9] * 10)
-    trainy = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9] * 10)
+    dataset = SVHNDataset(
+        24,
+        n_valid=5000, n_bits_x=5
+    )
 
-    valx = np.array([-1] * 100)
-    valy = np.array([-1] * 100)
-
-    testx = np.array([-2] * 100)
-    testy = np.array([-2] * 100)
-
-    dataset = Dataset(trainx, trainy, testx, testy, batch_size=10, valx=valx, valy=valy, init_size=4, n_labels=20)
 
     # mus = tf.random_normal([2, 5, 5, 3])
     # z = tf.random_normal([13, 5, 5, 3])
@@ -300,9 +296,13 @@ if __name__ == "__main__":
     # dataset = CIFAR10Dataset(10)
 
     x, y = dataset.x, dataset.y
-    x_u = dataset.x_u
     sess.run(dataset.use_train)
-    _x, _y, _u = sess.run([x, y, x_u])
+    _x, _y = sess.run([x, y])
+    for (im, l) in zip(_x, _y):
+        print(l)
+        cv2.imshow('im', im)
+        cv2.waitKey(0)
+    1/0
     print(_x, _y, _u)
     sess.run(dataset.use_init)
     _x, _y = sess.run([x, y])

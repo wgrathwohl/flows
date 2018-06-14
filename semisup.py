@@ -57,8 +57,8 @@ if __name__ == "__main__":
     parser.add_argument("--decay_factor", type=float, default=.1, help="Multiplier on learning rate")
 
     # Model hyperparams:
-    parser.add_argument("--width", type=int, default=64, help="Width of hidden layers")
-    parser.add_argument("--depth", type=int, default=4, help="Depth of network")
+    parser.add_argument("--width", type=int, default=512, help="Width of hidden layers")
+    parser.add_argument("--depth", type=int, default=32, help="Depth of network")
     parser.add_argument("--n_levels", type=int, default=3, help="Number of levels")
     parser.add_argument("--disc_weight", type=float, default=0.00, help="Weight of log p(y|x) in weighted loss")
     parser.add_argument("--n_bits_x", type=int, default=5, help="Number of bits of x")
@@ -168,14 +168,22 @@ if __name__ == "__main__":
     tf.summary.image("x", x)
     tf.summary.scalar("recons", recons_error)
     tf.summary.scalar("lr", lr)
-    loss_summary = tf.summary.scalar("loss", loss)
+    tf.summary.scalar("loss", loss)
     acc_summary = tf.summary.scalar("accuracy", accuracy)
-    tf.summary.scalar("logdet", tf.reduce_mean(logdet))
-    tf.summary.scalar("logpz", tf.reduce_mean(logpz_given_y))
-    tf.summary.scalar("disc_objective", disc_objective)
-    tf.summary.scalar("gen_objective_l", gen_objective_l)
+    m_logdet = tf.reduce_mean(logdet)
+    m_logpz_given_y = tf.reduce_mean(logpz_given_y)
+    logdet_summary = tf.summary.scalar("logdet", m_logdet)
+    logpz_summary = tf.summary.scalar("logpz", m_logpz_given_y)
+    disc_obj_summary = tf.summary.scalar("disc_objective", disc_objective)
+    gen_obj_summary = tf.summary.scalar("gen_objective_l", gen_objective_l)
+    # the summary op to call for the training data
     train_summary = tf.summary.merge_all()
-    test_summary = acc_summary
+    # get all summaries we want to display on the test set
+    test_summaries = [acc_summary, logdet_summary, logpz_summary, disc_obj_summary, gen_obj_summary]
+    # get the values we need to call to get mean stats
+    test_values = [accuracy, m_logdet, m_logpz_given_y, disc_objective, gen_objective_l]
+    test_value_names = ['acc', 'logdet', 'logpz_given_y', 'disc_obj', 'gen_obj']
+    test_summary = tf.summary.merge(test_summaries)
 
     # savers for the best validation models and regularly
     best_saver = tf.train.Saver(max_to_keep=5)
@@ -190,18 +198,20 @@ if __name__ == "__main__":
     # evaluation code block
     def evaluate(init_op, writer, name):
         sess.run(init_op)
-        test_acc = []
+        summary_values = []
         while True:
             try:
-                _c = sess.run(correct)
-                test_acc.extend(_c)
+                summary_values.append(sess.run(test_values))
             except tf.errors.OutOfRangeError:
-                # at epoch end
-                test_acc = np.mean(test_acc)
-                print("{} acc: {}".format(name, test_acc))
-                sstr = sess.run(test_summary, feed_dict={accuracy: test_acc})
+                summary_values = np.array(summary_values).mean(axis=0)
+                print("{}: ...".format(name))
+                for val_name, val_val in zip(test_value_names, summary_values):
+                    print("    {}: {}".format(val_name, val_val))
+                fd = {node: val for node, val in zip(test_values, summary_values)}
+                sstr = sess.run(test_summary, feed_dict=fd)
                 writer.add_summary(sstr, cur_iter)
-                return test_acc
+                # return accuracy to determine best model
+                return summary_values[0]
 
     # restore model if asked
     if args.load_path is not None:

@@ -258,9 +258,8 @@ def mog_sample(mus, shape, stddev=1.):
 if __name__ == "__main__":
     sess = tf.Session()
 
-    dataset = SVHNDataset(
-        24,
-        n_valid=5000, n_bits_x=5
+    dataset = MNISTDataset(
+        128, n_labels=100, n_bits_x=5
     )
 
 
@@ -295,10 +294,12 @@ if __name__ == "__main__":
     #
     # dataset = CIFAR10Dataset(10)
 
-    x, y = dataset.x, dataset.y
+    x, y, xu = dataset.x, dataset.y, dataset.x_u
     sess.run(dataset.use_train)
-    _x, _y = sess.run([x, y])
-    for (im, l) in zip(_x, _y):
+    _x, _y, _xu = sess.run([x, y, xu])
+    print(_x.shape, _y.shape, _xu.shape)
+    1.0
+    for (im, l) in zip(_x, _y, _xu):
         print(l)
         cv2.imshow('im', im)
         cv2.waitKey(0)

@@ -6,34 +6,6 @@ import json
 import shutil
 
 
-def create_experiment_directory(args):
-    # write params
-    with open(os.path.join(args.train_dir, "params.txt"), 'w') as f:
-        f.write(json.dumps(args.__dict__))
-    # copy code
-    code_dest_dir = os.path.join(args.train_dir, "code")
-    os.mkdir(code_dest_dir)
-    code_dir = os.path.dirname(__file__)
-    code_dir = '.' if code_dir == '' else code_dir
-    python_files = [os.path.join(code_dir, fn) for fn in os.listdir(code_dir) if fn.endswith(".py")]
-    for pyf in python_files:
-        print(pyf, code_dest_dir)
-        shutil.copy2(pyf, code_dest_dir)
-    os.mkdir(os.path.join(args.train_dir, "best"))
-    os.mkdir(os.path.join(args.train_dir, "backup"))
-
-
-def get_lr(epoch, args):
-    epoch_lr = (args.lr * (epoch + 1) / args.epochs_warmup) if epoch < args.epochs_warmup + 1 else args.lr
-    # get decayed lr
-    if args.lr_scalemode == 0:
-        return epoch_lr
-    else:
-        lr_scale = args.decay_factor ** (epoch // args.epochs_decay)
-        epoch_lr *= lr_scale
-        return epoch_lr
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_dir", type=str, default="/tmp/train")
@@ -63,11 +35,14 @@ if __name__ == "__main__":
     parser.add_argument("--disc_weight", type=float, default=0.00, help="Weight of log p(y|x) in weighted loss")
     parser.add_argument("--n_bits_x", type=int, default=5, help="Number of bits of x")
 
+
     args = parser.parse_args()
     args.n_bins_x = 2.**args.n_bits_x
     assert 0. <= args.disc_weight <= 1., "Disc weigt must be in [0., 1.]"
-    # set up logging
+    assert args.finetune in (0, 1)
+    assert args.clf_type in ("unwrap", "pool")
     assert not os.path.exists(args.train_dir), "This directory already exists..."
+    # set up logging
     train_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "train"))
     test_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "test"))
     valid_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "valid"))
@@ -100,7 +75,8 @@ if __name__ == "__main__":
         trainable=True
     )
     # sample from N(0, I) for low level features and MOG for top level features
-    z_samp = [tf.random_normal(tf.shape(_z)) for _z in z[:-1]] + [utils.mog_sample(class_mu, tf.shape(z[-1]))]
+    # temp = .1
+    z_samp = [.1 * tf.random_normal(tf.shape(_z)) for _z in z[:-1]] + [utils.mog_sample(class_mu, tf.shape(z[-1]), .1)]
     x_samp, _ = net(z_samp, "net", args.n_levels, args.depth, width=args.width, backward=True)
 
     # get means for top features for mini batch elements

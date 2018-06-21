@@ -16,8 +16,6 @@ def preprocess(x, n_bits_x=None, rand=True):
     # add [0, 1] random noise
     if rand:
         x = x + tf.random_uniform(tf.shape(x), 0., 1.)
-    else:
-        x = x + .5
     x = x / n_bins - .5
     return x
 
@@ -82,14 +80,11 @@ def create_dataset(x, y, batch_size, shuffle=True, repeat=False, ind_aug=None, b
 
 
 class Dataset(object):
-    def batch_aug_train(self, x, y):
+    def batch_aug(self, x, y):
         return preprocess(x, self.n_bits_x, True), y
 
-    def batch_aug_train_unsup(self, x):
+    def batch_aug_unsup(self, x):
         return preprocess(x, self.n_bits_x, True)
-
-    def batch_aug_test(self, x, y):
-        return preprocess(x, self.n_bits_x, True), y
 
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,
@@ -106,27 +101,47 @@ class Dataset(object):
         # store original trainx so we can use it go generate a large init batch
         # since no labels are used in initialization, this is ok
         x_orig, y_orig = trainx, trainy
-
-        # restrict training set if asked
+        # if using unlabeled data sample labeled batches of size bs_l and unlabeled batches of size bs_u
+        # such that bs_u + bs_l = batch_size
         if n_labels is not None:
-            _, _, trainx, trainy = split_dataset(trainx, trainy, n_labels)
+            trainx_unlabeled, _, trainx, trainy = split_dataset(trainx, trainy, n_labels)
+            train_u = create_dataset(trainx_unlabeled, None, batch_size,
+                                     ind_aug=train_aug, batch_aug=self.batch_aug_unsup)
+            iterator_u = tf.data.Iterator.from_structure(train_u.output_types, train_u.output_shapes)
+            self.x_u = iterator_u.get_next()
+            use_train_u = iterator_u.make_initializer(train_u)
+            self.n_train_u = len(trainx_unlabeled)
+            # if we are using unlabeled data, we use the unlabeled set to tell us when an epoch has ended
+            # since the labeled dataset is much smaller, loop through the training set indefinitely and
+            # we use the unlabeled set to tell us when an epoch has ended
+            bs_l = min(len(trainx), batch_size)
+            train_repeat = True
+        else:
+            train_repeat = False
+            bs_l = batch_size
+            self.x_u = None
 
         self.n_train_l = len(trainx)
-        train = create_dataset(trainx, trainy, batch_size, ind_aug=train_aug, batch_aug=self.batch_aug_train)
-        test = create_dataset(testx, testy, batch_size, shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug_test)
+        train = create_dataset(trainx, trainy, bs_l,
+                               repeat=train_repeat, ind_aug=train_aug, batch_aug=self.batch_aug)
+        test = create_dataset(testx, testy, batch_size, shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug)
         iterator = tf.data.Iterator.from_structure(train.output_types, train.output_shapes)
         self.x, self.y = iterator.get_next()
         self.use_train = iterator.make_initializer(train)
+        # if using unlabeled data, group reset ops for labeled and unlabeled training data
+        if n_labels is not None:
+            self.use_train = tf.group([self.use_train, use_train_u])
+
         self.use_test = iterator.make_initializer(test)
         if valx is not None:
             valid = create_dataset(valx, valy, batch_size,
-                                   shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug_test)
+                                   shuffle=False, ind_aug=test_aug, batch_aug=self.batch_aug)
             self.use_valid = iterator.make_initializer(valid)
         else:
             self.use_valid = None
 
         if init_size is not None:
-            init = create_dataset(x_orig, y_orig, init_size, ind_aug=train_aug, batch_aug=self.batch_aug_train)
+            init = create_dataset(x_orig, y_orig, init_size, ind_aug=train_aug, batch_aug=self.batch_aug)
             self.use_init = iterator.make_initializer(init)
 
 
@@ -233,7 +248,6 @@ def mog_sample(mus, shape, stddev=1.):
     chosen_mus = tf.reduce_sum(mus[None, :, :, :, :] * inds[:, :, None, None, None], axis=1)
     samples = tf.random_normal(shape, stddev=stddev) + chosen_mus
     return samples
-
 
 
 if __name__ == "__main__":

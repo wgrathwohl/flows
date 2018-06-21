@@ -39,8 +39,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.n_bins_x = 2.**args.n_bits_x
     assert 0. <= args.disc_weight <= 1., "Disc weigt must be in [0., 1.]"
-    assert args.finetune in (0, 1)
-    assert args.clf_type in ("unwrap", "pool")
     assert not os.path.exists(args.train_dir), "This directory already exists..."
     # set up logging
     train_writer = tf.summary.FileWriter(os.path.join(args.train_dir, "train"))
@@ -75,8 +73,7 @@ if __name__ == "__main__":
         trainable=True
     )
     # sample from N(0, I) for low level features and MOG for top level features
-    # temp = .1
-    z_samp = [.1 * tf.random_normal(tf.shape(_z)) for _z in z[:-1]] + [utils.mog_sample(class_mu, tf.shape(z[-1]), .1)]
+    z_samp = [tf.random_normal(tf.shape(_z)) for _z in z[:-1]] + [utils.mog_sample(class_mu, tf.shape(z[-1]))]
     x_samp, _ = net(z_samp, "net", args.n_levels, args.depth, width=args.width, backward=True)
 
     # get means for top features for mini batch elements

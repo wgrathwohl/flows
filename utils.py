@@ -16,6 +16,8 @@ def preprocess(x, n_bits_x=None, rand=True):
     # add [0, 1] random noise
     if rand:
         x = x + tf.random_uniform(tf.shape(x), 0., 1.)
+    else:
+        x = x + .5
     x = x / n_bins - .5
     return x
 

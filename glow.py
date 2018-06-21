@@ -261,8 +261,9 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default='mnist', help="Problem (mnist/cifar10/svhn)")
     parser.add_argument("--num_valid", type=int, default=None,
                         help="The number of examples to place into the validaiton set (only for svhn and cifar10)")
+    parser.add_argument("--num_labels", type=int, default=None, help="Number of labeled examples to use")
     parser.add_argument("--load_path", type=str, default=None, help="Path for load saved checkpoint from")
-    parser.add_argument("--log_iters", type=int, default=1000, help="iters per each print and summary")
+    parser.add_argument("--log_iters", type=int, default=100, help="iters per each print and summary")
 
     # Optimization hyperparams:
     parser.add_argument("--epochs", type=int, default=100000, help="Train epoch size")
@@ -302,11 +303,12 @@ if __name__ == "__main__":
 
     dataset_fn = {'svhn': utils.SVHNDataset, 'cifar10': utils.CIFAR10Dataset, 'mnist': utils.MNISTDataset}[args.dataset]
     dataset = dataset_fn(
-        args.batch_size, init_size=args.init_batch_size, n_valid=args.num_valid, n_bits_x=args.n_bits_x
+        args.batch_size,
+        init_size=args.init_batch_size, n_labels=args.num_labels, n_valid=args.num_valid, n_bits_x=args.n_bits_x
     )
 
     # unpack labeled examples
-    x, y = dataset.x, dataset.y
+    x, y = dataset.x, tf.to_int64(dataset.y)
 
     # build graph
     z_init, _ = net(x, "net", args.n_levels, args.depth, width=args.width, init=True)
@@ -314,6 +316,7 @@ if __name__ == "__main__":
 
     # train to optimize logp(x)
     if args.finetune == 0:
+        print("Training for generation")
         # input reconstructions
         x_recons, _ = net(z, "net", args.n_levels, args.depth, width=args.width, backward=True)
         # samples
@@ -367,6 +370,7 @@ if __name__ == "__main__":
 
         # restore model if asked
         if args.load_path is not None:
+            print("restoring model...")
             backup_saver.restore(sess, args.load_path)
             start_epoch = int(args.load_path.split('-')[-1])
         else:
@@ -387,7 +391,7 @@ if __name__ == "__main__":
                     fd = {node: val for node, val in zip(test_values, summary_values)}
                     sstr = sess.run(test_summary, feed_dict=fd)
                     writer.add_summary(sstr, cur_iter)
-                    # return accuracy to determine best model
+                    # return loss to determine best model
                     return summary_values[0]
 
         # training loop
@@ -430,6 +434,44 @@ if __name__ == "__main__":
 
     # finetune classification
     else:
+        print("Finetuning model for classification")
+        # create saver for restoring the weights trained for generation
+        pretrain_saver = tf.train.Saver()
+
+        # get top z as features for classification layer
+        top_z = z[-1]
+        if args.clf_type == "unwrap":
+            zsize = np.prod(gs(top_z)[1:])
+            feats = tf.reshape(top_z, [-1, zsize])
+        elif args.clf_type == "pool":
+            feats = tf.reduce_mean(top_z, axis=[1, 2])
+
+        logits = tf.layers.dense(feats, dataset.n_class, name="logits")
+        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y, logits=logits))
+        preds = tf.argmax(logits, axis=1)
+        correct = tf.to_float(tf.equal(preds, y))
+        accuracy = tf.reduce_mean(correct)
+
+        # create optimizer
+        lr = tf.placeholder(tf.float32, [], name="lr")
+        optim = tf.train.AdamOptimizer(lr)
+        opt = optim.minimize(loss)
+
+        # make summaries
+        tf.summary.image("x", x)
+        tf.summary.scalar("lr", lr)
+        # summaries for test datasets
+        loss_summary = tf.summary.scalar("loss", loss)
+        acc_summary = tf.summary.scalar("accuracy", accuracy)
+        # the summary op to call for the training data
+        train_summary = tf.summary.merge_all()
+        # get all summaries we want to display on the test set
+        test_summaries = [loss_summary, acc_summary]
+        # get the values we need to call to get mean stats
+        test_values = [loss, accuracy]
+        test_value_names = ['loss', 'acc']
+        test_summary = tf.summary.merge(test_summaries)
+
         # initialize variables
         sess.run(tf.global_variables_initializer())
         # initialize act-norm parameters
@@ -441,21 +483,65 @@ if __name__ == "__main__":
         backup_saver = tf.train.Saver(max_to_keep=5)
         # restore pretrained weights
         if args.load_path is not None:
-            backup_saver.restore(sess, args.load_path)
+            print("Loading pretrained weights")
+            pretrain_saver.restore(sess, args.load_path)
 
-        # get top z as features for classification layer
-        top_z = z[-1]
-        if args.clf_type == "unwrap":
-            zsize = np.prod(gs(top_z)[1:])
-            feats = tf.reshape(top_z, [-1, zsize])
-        elif args.clf_type == "pool":
-            feats = tf.reduce_mean(top_z, axis=[1, 2])
+        # evaluation code block
+        def evaluate(init_op, writer, name):
+            sess.run(init_op)
+            summary_values = []
+            while True:
+                try:
+                    summary_values.append(sess.run(test_values))
+                except tf.errors.OutOfRangeError:
+                    summary_values = np.array(summary_values).mean(axis=0)
+                    print("{}: ...".format(name))
+                    for val_name, val_val in zip(test_value_names, summary_values):
+                        print("    {}: {}".format(val_name, val_val))
+                    fd = {node: val for node, val in zip(test_values, summary_values)}
+                    sstr = sess.run(test_summary, feed_dict=fd)
+                    writer.add_summary(sstr, cur_iter)
+                    # return accuracy to determine best model
+                    return summary_values[1]
 
-        logits = tf.layers.dense(feats, dataset.n_class, name="logits")
-        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y, logits=logits)
-        preds = tf.argmax(logits, axis=1)
-        correct = tf.to_float(tf.equal(preds, y))
-        accuracy = tf.reduce_mean(correct)
+        # training loop
+        cur_iter = 0
+        best_valid = 0.
+        for epoch in range(args.epochs):
+            sess.run(dataset.use_train)
+            t_start = time.time()
+            # get lr for this epoch
+            epoch_lr = get_lr(epoch, args)
+            while True:
+                try:
+                    if cur_iter % args.log_iters == 0:
+                        _l, _a, _, sstr = sess.run([loss, accuracy, opt, train_summary],
+                                                    feed_dict={lr: epoch_lr})
+                        train_writer.add_summary(sstr, cur_iter)
+                        print(cur_iter, _l, _a)
+
+                    else:
+                        _ = sess.run(opt, feed_dict={lr: epoch_lr})
+
+                    cur_iter += 1
+                except tf.errors.OutOfRangeError:
+                    print("Completed epoch {} in {}".format(epoch, time.time() - t_start))
+                    break
+
+            # get accuracy on test set
+            if epoch % args.epochs_valid == 0:
+                evaluate(dataset.use_test, test_writer, "Test")
+                # if we have a validation set, get validation accuracy
+                if dataset.use_valid is not None:
+                    valid_loss = evaluate(dataset.use_valid, valid_writer, "Valid")
+                    if valid_loss > best_valid:
+                        print("Best performing model with accuracy: {}".format(valid_loss))
+                        best_valid = valid_loss
+                        best_saver.save(sess, "{}/best/model.ckpt".format(args.train_dir), global_step=epoch)
+
+            # backup model
+            if epoch % args.epochs_backup == 0:
+                backup_saver.save(sess, "{}/backup/model.ckpt".format(args.train_dir), global_step=epoch)
 
 
 

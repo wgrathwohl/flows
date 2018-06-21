@@ -89,7 +89,7 @@ class Dataset(object):
         return preprocess(x, self.n_bits_x, True)
 
     def batch_aug_test(self, x, y):
-        return preprocess(x, self.n_bits_x, False), y
+        return preprocess(x, self.n_bits_x, True), y
 
     def __init__(self, trainx, trainy, testx, testy, batch_size,
                  valx=None, valy=None,

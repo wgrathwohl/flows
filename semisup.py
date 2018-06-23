@@ -35,6 +35,7 @@ if __name__ == "__main__":
     parser.add_argument("--disc_weight", type=float, default=0.00, help="Weight of log p(y|x) in weighted loss")
     parser.add_argument("--n_bits_x", type=int, default=5, help="Number of bits of x")
 
+    parser.add_argument("--finetune", type=int, default=0, help="if 0, then train generaitve, 1 then finetune")
 
     args = parser.parse_args()
     args.n_bins_x = 2.**args.n_bits_x
@@ -168,24 +169,6 @@ if __name__ == "__main__":
     sess.run(dataset.use_init)
     sess.run(z_init)
 
-    # evaluation code block
-    def evaluate(init_op, writer, name):
-        sess.run(init_op)
-        summary_values = []
-        while True:
-            try:
-                summary_values.append(sess.run(test_values))
-            except tf.errors.OutOfRangeError:
-                summary_values = np.array(summary_values).mean(axis=0)
-                print("{}: ...".format(name))
-                for val_name, val_val in zip(test_value_names, summary_values):
-                    print("    {}: {}".format(val_name, val_val))
-                fd = {node: val for node, val in zip(test_values, summary_values)}
-                sstr = sess.run(test_summary, feed_dict=fd)
-                writer.add_summary(sstr, cur_iter)
-                # return accuracy to determine best model
-                return summary_values[0]
-
     # restore model if asked
     if args.load_path is not None:
         backup_saver.restore(sess, args.load_path)
@@ -193,43 +176,132 @@ if __name__ == "__main__":
     else:
         start_epoch = 0
 
+    # if training for generation
+    if args.finetune == 0:
+        # evaluation code block
+        def evaluate(init_op, writer, name):
+            sess.run(init_op)
+            summary_values = []
+            while True:
+                try:
+                    summary_values.append(sess.run(test_values))
+                except tf.errors.OutOfRangeError:
+                    summary_values = np.array(summary_values).mean(axis=0)
+                    print("{}: ...".format(name))
+                    for val_name, val_val in zip(test_value_names, summary_values):
+                        print("    {}: {}".format(val_name, val_val))
+                    fd = {node: val for node, val in zip(test_values, summary_values)}
+                    sstr = sess.run(test_summary, feed_dict=fd)
+                    writer.add_summary(sstr, cur_iter)
+                    # return accuracy to determine best model
+                    return summary_values[0]
 
-    # training loop
-    cur_iter = 0
-    best_valid = 0.0
-    for epoch in range(start_epoch, args.epochs):
-        sess.run(dataset.use_train)
-        t_start = time.time()
-        # get lr for this epoch
-        epoch_lr = get_lr(epoch, args)
-        while True:
-            try:
-                if cur_iter % args.log_iters == 0:
-                    _re, _l, _a, _, sstr = sess.run([recons_error, loss, accuracy, opt, train_summary],
-                                                    feed_dict={lr: epoch_lr})
-                    train_writer.add_summary(sstr, cur_iter)
-                    print(cur_iter, _l, _a, _re)
+        # training loop
+        cur_iter = 0
+        best_valid = 0.0
+        for epoch in range(start_epoch, args.epochs):
+            sess.run(dataset.use_train)
+            t_start = time.time()
+            # get lr for this epoch
+            epoch_lr = get_lr(epoch, args)
+            while True:
+                try:
+                    if cur_iter % args.log_iters == 0:
+                        _re, _l, _a, _, sstr = sess.run([recons_error, loss, accuracy, opt, train_summary],
+                                                        feed_dict={lr: epoch_lr})
+                        train_writer.add_summary(sstr, cur_iter)
+                        print(cur_iter, _l, _a, _re)
 
-                else:
-                    _ = sess.run(opt, feed_dict={lr: epoch_lr})
+                    else:
+                        _ = sess.run(opt, feed_dict={lr: epoch_lr})
 
-                cur_iter += 1
-            except tf.errors.OutOfRangeError:
-                print("Completed epoch {} in {}".format(epoch, time.time() - t_start))
-                break
+                    cur_iter += 1
+                except tf.errors.OutOfRangeError:
+                    print("Completed epoch {} in {}".format(epoch, time.time() - t_start))
+                    break
 
-        # get accuracy on test set
-        if epoch % args.epochs_valid == 0:
-            evaluate(dataset.use_test, test_writer, "Test")
-            # if we have a validation set, get validation accuracy
-            if dataset.use_valid is not None:
-                valid_acc = evaluate(dataset.use_valid, valid_writer, "Valid")
-                if valid_acc > best_valid:
-                    print("Best performing model with accuracy: {}".format(valid_acc))
-                    best_valid = valid_acc
-                    best_saver.save(sess, "{}/best/model.ckpt".format(args.train_dir), global_step=epoch)
+            # get accuracy on test set
+            if epoch % args.epochs_valid == 0:
+                evaluate(dataset.use_test, test_writer, "Test")
+                # if we have a validation set, get validation accuracy
+                if dataset.use_valid is not None:
+                    valid_acc = evaluate(dataset.use_valid, valid_writer, "Valid")
+                    if valid_acc > best_valid:
+                        print("Best performing model with accuracy: {}".format(valid_acc))
+                        best_valid = valid_acc
+                        best_saver.save(sess, "{}/best/model.ckpt".format(args.train_dir), global_step=epoch)
 
-        # backup model
-        if epoch % args.epochs_backup == 0:
-            backup_saver.save(sess, "{}/backup/model.ckpt".format(args.train_dir), global_step=epoch)
+            # backup model
+            if epoch % args.epochs_backup == 0:
+                backup_saver.save(sess, "{}/backup/model.ckpt".format(args.train_dir), global_step=epoch)
 
+    # if finetuning for classification
+    else:
+        # create optimizer for classification
+        optim = tf.train.AdamOptimizer(args.lr)
+        opt = optim.minimize(-disc_objective)
+
+        test_values = [accuracy, disc_objective]
+        test_value_names = ['acc', 'disc_obj']
+        summ_op = tf.summary.merge([acc_summary, disc_obj_summary])
+
+        # evaluation code block
+        def evaluate(init_op, writer, name):
+            sess.run(init_op)
+            summary_values = []
+            while True:
+                try:
+                    summary_values.append(sess.run(test_values))
+                except tf.errors.OutOfRangeError:
+                    summary_values = np.array(summary_values).mean(axis=0)
+                    print("{}: ...".format(name))
+                    for val_name, val_val in zip(test_value_names, summary_values):
+                        print("    {}: {}".format(val_name, val_val))
+                    fd = {node: val for node, val in zip(test_values, summary_values)}
+                    sstr = sess.run(test_summary, feed_dict=fd)
+                    writer.add_summary(sstr, cur_iter)
+                    # return accuracy to determine best model
+                    return summary_values[0]
+
+        # init vars from new optimizer
+        vars_to_init = [
+            v for v in tf.global_variables() if "Adam" in v.name or "beta1_power" in v.name or "beta2_power" in v.name
+        ]
+        initializer = tf.variables_initializer(vars_to_init)
+        sess.run(initializer)
+
+        # training loop
+        cur_iter = 0
+        best_valid = 0.0
+        for epoch in range(args.epochs):
+            sess.run(dataset.use_train)
+            t_start = time.time()
+            while True:
+                try:
+                    if cur_iter % args.log_iters == 0:
+                        _re, _l, _a, _, sstr = sess.run([recons_error, disc_objective, accuracy, opt, summ_op])
+                        train_writer.add_summary(sstr, cur_iter)
+                        print(cur_iter, -_l, _a, _re)
+
+                    else:
+                        _ = sess.run(opt)
+
+                    cur_iter += 1
+                except tf.errors.OutOfRangeError:
+                    print("Completed epoch {} in {}".format(epoch, time.time() - t_start))
+                    break
+
+            # get accuracy on test set
+            if epoch % args.epochs_valid == 0:
+                evaluate(dataset.use_test, test_writer, "Test")
+                # if we have a validation set, get validation accuracy
+                if dataset.use_valid is not None:
+                    valid_acc = evaluate(dataset.use_valid, valid_writer, "Valid")
+                    if valid_acc > best_valid:
+                        print("Best performing model with accuracy: {}".format(valid_acc))
+                        best_valid = valid_acc
+                        best_saver.save(sess, "{}/best/model.ckpt".format(args.train_dir), global_step=epoch)
+
+            # backup model
+            if epoch % args.epochs_backup == 0:
+                backup_saver.save(sess, "{}/backup/model.ckpt".format(args.train_dir), global_step=epoch)
